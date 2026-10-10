@@ -1,0 +1,413 @@
+"""FastAPI app: REST API for notebooks/sources/pages, the live voice WebSocket, and the static frontend."""
+
+import asyncio
+import json
+import logging
+import secrets
+import shutil
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, WebSocket
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from tutor import config, web
+from tutor.library import DocumentError, delete_document, doc_id_for, ingest, read_meta
+from tutor.notebooks import ICONS as NOTEBOOK_ICONS
+from tutor.server import pages
+from tutor.server.jobs import JobQueue, is_pdf
+from tutor.server.live import live_endpoint
+from tutor.server.state import AppState
+from tutor.tools import NotebookTools
+
+log = logging.getLogger("server")
+http_log = logging.getLogger("http")
+WEB_DIR = config.PROJECT_ROOT / "web"
+state = AppState()
+# Polled or high-volume GETs are logged at DEBUG (file only) so the console stays readable.
+_QUIET_GETS = ("/api/health", "/api/status", "/api/jobs/", "/api/docs/")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    state.start()
+    log.info("Server ready. Data folder: %s", config.DATA_ROOT)
+    yield
+    log.info("Server shutting down")
+    state.jobs.shutdown()
+
+
+app = FastAPI(title="Voice Tutor", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    started = time.perf_counter()
+    path = request.url.path
+    try:
+        response = await call_next(request)
+    except Exception:
+        http_log.exception("%s %s crashed", request.method, path)
+        return JSONResponse({"detail": "Internal error. See logs/errors.log."}, status_code=500)
+    ms = (time.perf_counter() - started) * 1000
+    status = response.status_code
+    if status >= 500:
+        level = logging.ERROR
+    elif status >= 400:
+        level = logging.WARNING
+    elif request.method == "GET" and (not path.startswith("/api/") or path.startswith(_QUIET_GETS)):
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+    http_log.log(level, "%s %s -> %d (%.0f ms)", request.method, path, status, ms)
+    return response
+
+
+# ---- helpers -----------------------------------------------------------------------------
+
+
+def _notebook_or_404(notebook_id: str):
+    try:
+        return state.notebooks.get(notebook_id)
+    except KeyError:
+        raise HTTPException(404, "Notebook not found")
+
+
+def _meta_or_404(doc_id: str) -> dict:
+    meta = read_meta(doc_id) if doc_id.isalnum() else None
+    if meta is None:
+        raise HTTPException(404, "Source not found")
+    return meta
+
+
+def _source_pdf(doc_id: str) -> Path:
+    stored = config.FILES_DIR / f"{doc_id}.pdf"
+    if stored.exists():
+        return stored
+    original = Path(_meta_or_404(doc_id)["source_file"])
+    if original.exists():
+        return original
+    raise HTTPException(410, "The original PDF file is missing")
+
+
+def _source_info(doc_id: str) -> dict:
+    meta = read_meta(doc_id)
+    if meta is None:
+        return {"doc_id": doc_id, "title": "(missing source)", "missing": True}
+    info = {"doc_id": doc_id, "title": meta["title"], "file_name": meta.get("file_name", ""),
+            "pages": meta["pages"], "chunks": meta["chunks"], "covered": 0, "position": {"started": False}}
+    if state.cache is not None:
+        try:
+            lesson = state.cache.get(doc_id).lesson
+            info["covered"] = lesson.percent_covered()
+            info["position"] = lesson.position()
+        except DocumentError as e:
+            info["error"] = str(e)
+    return info
+
+
+def _notebook_payload(nb, with_history: bool = False) -> dict:
+    payload = nb.summary()
+    payload["sources"] = [_source_info(d) for d in nb.sources]
+    if with_history:
+        payload["history"] = nb.history
+        payload["jobs"] = [j.to_dict() for j in state.jobs.for_notebook(nb.id)]
+    return payload
+
+
+# ---- status & settings ---------------------------------------------------------------------
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "app": "voice-tutor"}
+
+
+@app.get("/api/status")
+def status():
+    embedder = "ready" if state.embedder is not None else ("error" if state.embedder_error else "loading")
+    return {
+        "embedder": embedder,
+        "embedder_error": state.embedder_error,
+        "gemini_key": state.has_gemini_key(),
+        "live_model": config.LIVE_MODEL,
+        "web_provider": web.provider(),
+        "voices": config.VOICES,
+        "log_file": str(config.PROJECT_ROOT / "logs" / "voice-tutor.log"),
+        **state.settings(),
+    }
+
+
+class SettingsIn(BaseModel):
+    voice: str | None = None
+
+
+@app.put("/api/settings")
+def update_settings(body: SettingsIn):
+    if body.voice is not None and body.voice not in config.VOICES:
+        raise HTTPException(400, "Unknown voice")
+    return state.update_settings(voice=body.voice)
+
+
+@app.get("/api/voices/{voice}/preview")
+async def voice_preview(voice: str):
+    if voice not in config.VOICES:
+        raise HTTPException(404, "Unknown voice")
+    if not state.has_gemini_key():
+        raise HTTPException(503, "Voice previews need a Gemini API key in .env")
+    from tutor.voice import preview
+
+    try:
+        wav = await preview.get_preview(voice)
+    except Exception as e:  # quota, network: tell the UI plainly
+        log.warning("Voice preview for %s failed: %s", voice, e)
+        raise HTTPException(502, "Couldn't generate that preview right now. Try again in a moment.")
+    return Response(wav, media_type="audio/wav", headers={"Cache-Control": "max-age=86400"})
+
+
+# ---- notebooks ---------------------------------------------------------------------------
+
+
+class NotebookIn(BaseModel):
+    name: str = "Untitled notebook"
+    icon: str | None = None
+
+
+class NotebookPatch(BaseModel):
+    name: str | None = None
+    icon: str | None = None
+    active_source: str | None = None
+
+
+@app.get("/api/notebooks")
+def list_notebooks():
+    return [_notebook_payload(nb) for nb in state.notebooks.all()]
+
+
+@app.post("/api/notebooks", status_code=201)
+def create_notebook(body: NotebookIn):
+    return _notebook_payload(state.notebooks.create(body.name, body.icon))
+
+
+@app.get("/api/notebooks/{notebook_id}")
+def get_notebook(notebook_id: str):
+    return _notebook_payload(_notebook_or_404(notebook_id), with_history=True)
+
+
+@app.patch("/api/notebooks/{notebook_id}")
+def patch_notebook(notebook_id: str, body: NotebookPatch):
+    nb = _notebook_or_404(notebook_id)
+    if body.active_source is not None and body.active_source not in nb.sources:
+        raise HTTPException(400, "That source isn't in this notebook")
+    if body.icon is not None and body.icon not in NOTEBOOK_ICONS:
+        raise HTTPException(400, "Unknown icon")
+    nb = state.notebooks.update(notebook_id, name=body.name, icon=body.icon, active_source=body.active_source)
+    return _notebook_payload(nb)
+
+
+@app.delete("/api/notebooks/{notebook_id}", status_code=204)
+def delete_notebook(notebook_id: str):
+    _notebook_or_404(notebook_id)
+    for doc_id in state.notebooks.delete(notebook_id):
+        if state.cache:
+            state.cache.drop(doc_id)
+        delete_document(doc_id)
+    return Response(status_code=204)
+
+
+@app.delete("/api/notebooks/{notebook_id}/history", status_code=204)
+def clear_history(notebook_id: str):
+    _notebook_or_404(notebook_id)
+    state.notebooks.clear_history(notebook_id)
+    return Response(status_code=204)
+
+
+@app.get("/api/notebooks/{notebook_id}/search")
+async def search_notebook(notebook_id: str, q: str = Query(..., min_length=1, max_length=500)):
+    nb = _notebook_or_404(notebook_id)
+    if not nb.sources:
+        return {"results": [], "refs": []}
+    try:
+        embedder = await asyncio.to_thread(state.require_embedder)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    tools = NotebookTools(state.cache, embedder, nb.sources, nb.active_source)
+    outcome = await asyncio.to_thread(tools.search_sources, q, None, 8)
+    return {"refs": (outcome.ui or {}).get("refs", [])}
+
+
+# ---- sources -----------------------------------------------------------------------------
+
+
+@app.post("/api/notebooks/{notebook_id}/sources", status_code=202)
+async def upload_sources(notebook_id: str, files: list[UploadFile]):
+    _notebook_or_404(notebook_id)
+    if not files:
+        raise HTTPException(400, "No files")
+    jobs = []
+    limit = config.MAX_UPLOAD_MB * 1024 * 1024
+    for upload in files:
+        name = Path(upload.filename or "document.pdf").name
+        part = config.FILES_DIR / f"upload-{secrets.token_hex(6)}.part"
+        size = 0
+        with part.open("wb") as out:
+            while chunk := await upload.read(1024 * 1024):
+                size += len(chunk)
+                if size > limit:
+                    break
+                out.write(chunk)
+        if size > limit:
+            part.unlink(missing_ok=True)
+            raise HTTPException(413, f"{name} is larger than {config.MAX_UPLOAD_MB} MB")
+        if size == 0 or not is_pdf(part):
+            part.unlink(missing_ok=True)
+            raise HTTPException(415, f"{name} isn't a PDF")
+        doc_id = await asyncio.to_thread(doc_id_for, part)
+        stored = config.FILES_DIR / f"{doc_id}.pdf"
+        if stored.exists():
+            part.unlink()
+        else:
+            shutil.move(str(part), stored)
+        jobs.append(state.jobs.submit(notebook_id, name, _ingest_work(notebook_id, stored, name)).to_dict())
+    return {"jobs": jobs}
+
+
+def _ingest_work(notebook_id: str, pdf: Path, display_name: str):
+    def work(job) -> None:
+        embedder = state.require_embedder(timeout=600)
+        result = ingest(pdf, embedder, progress=lambda s, d, t: JobQueue.report(job, s, d, t),
+                        display_name=display_name, remember_current=False, log=log.debug)
+        job.doc_id, job.title = result.doc_id, result.title
+        if state.cache:
+            state.cache.drop(result.doc_id)  # re-open with the fresh index
+        state.notebooks.add_source(notebook_id, result.doc_id)
+    return work
+
+
+@app.delete("/api/notebooks/{notebook_id}/sources/{doc_id}", status_code=204)
+def remove_source(notebook_id: str, doc_id: str):
+    _notebook_or_404(notebook_id)
+    if state.notebooks.remove_source(notebook_id, doc_id):  # nobody else uses it: delete the index
+        if state.cache:
+            state.cache.drop(doc_id)
+        delete_document(doc_id)
+    return Response(status_code=204)
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    job = state.jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    return job.to_dict()
+
+
+@app.delete("/api/jobs/{job_id}", status_code=204)
+def dismiss_job(job_id: str):
+    state.jobs.dismiss(job_id)
+    return Response(status_code=204)
+
+
+@app.get("/api/docs/{doc_id}/outline")
+async def doc_outline(doc_id: str):
+    _meta_or_404(doc_id)
+    await asyncio.to_thread(state.require_embedder)
+    try:
+        lesson = state.cache.get(doc_id).lesson
+    except DocumentError as e:
+        raise HTTPException(409, str(e))
+    return lesson.outline(max_level=3)
+
+
+@app.post("/api/docs/{doc_id}/reset")
+async def reset_progress(doc_id: str):
+    _meta_or_404(doc_id)
+    await asyncio.to_thread(state.require_embedder)
+    lesson = state.cache.get(doc_id).lesson
+    lesson.reset()
+    return lesson.outline(max_level=3)
+
+
+@app.get("/api/docs/{doc_id}/pages")
+async def page_sizes(doc_id: str):
+    sizes = await asyncio.to_thread(pages.page_sizes, _source_pdf(doc_id), config.doc_dir(doc_id) / "pages")
+    return {"sizes": sizes}
+
+
+@app.get("/api/docs/{doc_id}/page/{page}.png")
+async def page_image(doc_id: str, page: int, scale: float = 1.6):
+    pdf = _source_pdf(doc_id)
+    try:
+        png = await asyncio.to_thread(pages.render_page, pdf, page, scale, config.doc_dir(doc_id) / "pages")
+    except IndexError:
+        raise HTTPException(404, "No such page")
+    return Response(png, media_type="image/png", headers={"Cache-Control": "max-age=86400"})
+
+
+@app.get("/api/docs/{doc_id}/page/{page}/find")
+async def page_find(doc_id: str, page: int, text: str = Query(..., max_length=2000)):
+    rects = await asyncio.to_thread(pages.find_text, _source_pdf(doc_id), page, text)
+    return {"rects": rects}
+
+
+@app.get("/api/docs/{doc_id}/locate")
+async def page_locate(doc_id: str, text: str = Query(..., max_length=2000), first: int = 1, last: int = 0):
+    """Where a sentence of a chunk is printed (page + one rectangle per line), for follow-along highlights."""
+    return await asyncio.to_thread(pages.locate_text, _source_pdf(doc_id), text, first, last or first)
+
+
+@app.get("/api/docs/{doc_id}/file")
+def doc_file(doc_id: str):
+    meta = _meta_or_404(doc_id)
+    return FileResponse(_source_pdf(doc_id), media_type="application/pdf",
+                        filename=meta.get("file_name") or f"{doc_id}.pdf",
+                        content_disposition_type="inline")
+
+
+# ---- live voice --------------------------------------------------------------------------
+
+
+@app.websocket("/api/notebooks/{notebook_id}/live")
+async def live(ws: WebSocket, notebook_id: str):
+    await live_endpoint(ws, notebook_id, state)
+
+
+@app.exception_handler(DocumentError)
+async def document_error(_, exc: DocumentError):
+    return JSONResponse({"detail": str(exc)}, status_code=409)
+
+
+def _asset_version() -> str:
+    """Changes whenever any frontend file changes (newest modification time)."""
+    return str(int(max(p.stat().st_mtime for p in WEB_DIR.rglob("*") if p.is_file())))
+
+
+@app.get("/", include_in_schema=False)
+def index() -> HTMLResponse:
+    """index.html with every JS/CSS URL stamped ?v=<version> (via an import map for ES modules), so a
+    browser can never mix cached old modules with new ones after an update."""
+    version = _asset_version()
+    modules = sorted("/" + f.relative_to(WEB_DIR).as_posix() for f in (WEB_DIR / "js").glob("*.js"))
+    import_map = json.dumps({"imports": {m: f"{m}?v={version}" for m in modules}})
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    html = html.replace('href="/css/app.css"', f'href="/css/app.css?v={version}"')
+    entry = f'<script type="importmap">{import_map}</script><script type="module" src="/js/main.js?v={version}"></script>'
+    html = html.replace('<script type="module" src="/js/main.js"></script>', entry)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
+class FrontendFiles(StaticFiles):
+    """Static frontend with `Cache-Control: no-cache`: browsers revalidate (cheap 304s) instead of
+    running stale JS/CSS after the app is updated."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+# Static frontend last, so /api routes win.
+app.mount("/", FrontendFiles(directory=WEB_DIR, html=True), name="web")

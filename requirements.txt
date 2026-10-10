@@ -1,0 +1,32 @@
+# Loose, compatible ranges. Exact tested versions are pinned in requirements.lock (run.bat uses it).
+# torch / torchvision CPU wheels come from the PyTorch index:
+#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Embeddings (local)
+torch>=2.14
+torchvision>=0.29           # required by EmbeddingGemma 2's processor, even for text-only use
+sentence-transformers>=6.1  # EmbeddingGemma 2 requirement
+transformers>=5.19
+pillow
+
+# Retrieval + PDF parsing
+lancedb>=0.40               # native FTS (Tantivy removed)
+pandas
+pymupdf4llm>=1.28
+
+# Voice (Gemini Live) + web search
+google-genai>=2.29
+ddgs>=9.16                  # DuckDuckGo search (free, no key); Tavily used instead if TAVILY_API_KEY is set
+httpx
+
+# Web app
+fastapi>=0.143
+uvicorn[standard]>=0.54
+python-multipart            # file uploads
+websockets
+
+# Utilities / dev
+numpy
+pyyaml
+python-dotenv
+pytest

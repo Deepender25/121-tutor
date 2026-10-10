@@ -1,0 +1,48 @@
+# Retrieval eval for tests/fixtures/sample_toc.pdf. A hit = any top-k result covers one of `pages`
+# or contains `contains`. Mix of exact-term, paraphrased and voice-style (sloppy) questions.
+questions:
+  - q: "what does section 3.1 say"
+    pages: [5]
+    contains: "Tank capacity"
+  - q: "how do I work out how big my tank should be"
+    pages: [5]
+    contains: "Tank capacity"
+  - q: "is it legal to drink rainwater"
+    pages: [2]
+    contains: "Water Act 2019"
+  - q: "water act 2019 limit"
+    pages: [2]
+    contains: "10%"
+  - q: "which roof material gives the cleanest water"
+    pages: [3]
+    contains: "Metal roofs"
+  - q: "runoff coefficient of thatch"
+    pages: [3]
+    contains: "thatch"
+  - q: "first flush diverter how many litres"
+    pages: [4]
+    contains: "2 litres"
+  - q: "what size mesh filter"
+    pages: [4]
+    contains: "200 micron"
+  - q: "how often should I clean the gutters"
+    pages: [6]
+    contains: "gutters monthly"
+  - q: "how much chlorine to disinfect the tank"
+    pages: [6]
+    contains: "5 mg"
+  - q: "what are the parts of the system"
+    pages: [3]
+    contains: "four parts"
+  - q: "why should I bother harvesting rain"
+    pages: [1]
+    contains: "dependence on municipal"
+  - q: "first flush divertor"   # STT-style misspelling
+    pages: [4]
+    contains: "first-flush"
+  - q: "fifty square metre roof eight hundred millimetres rain"
+    pages: [5]
+    contains: "36,000"
+  - q: "maintenance schedule"
+    pages: [6]
+    contains: "Clean gutters"

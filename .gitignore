@@ -1,0 +1,60 @@
+# ---- secrets: API keys live in .env (copy .env.example) -------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ---- Python environments ---------------------------------------------------------------
+.venv/
+.venv*/
+venv/
+env/
+ENV/
+
+# ---- Python build & tool caches --------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# ---- app output (your notebooks, indexes and PDFs live in %LOCALAPPDATA%\voice-tutor) --
+logs/
+*.log
+data/
+sessions/
+
+# PDFs dropped into the project folder are yours, not the repo's (test fixtures excepted)
+*.pdf
+!tests/fixtures/*.pdf
+
+# ---- model caches (if HF_HOME / caches are pointed inside the project) ------------------
+.cache/
+hf_cache/
+*.safetensors
+*.bin
+
+# ---- editors & tools --------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+.claude/
+node_modules/
+
+# ---- OS junk (Windows / OneDrive / macOS) -----------------------------------------------
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
