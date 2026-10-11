@@ -72,3 +72,92 @@ def test_progress_persists(tmp_path):
     assert reloaded.progress.cursor == 2
     assert reloaded.position()["section_id"] == "s002"
     assert Progress.load(tmp_path / "progress.json").last_summary == "Last read: s002, page 3-4."
+
+
+def statuses(lesson):
+    return {s["id"]: s["status"] for s in lesson.outline(max_level=3)["sections"]}
+
+
+def test_mark_through_completes_everything_up_to_target_and_moves_cursor(tmp_path):
+    lesson = make_lesson(tmp_path)
+    result = lesson.mark("1.2", through=True)  # "everything up to 1.2"
+    assert result["completed"] and result["marked"] == "everything up to and including 1.2 Rules"
+    assert statuses(lesson) == {"s000": "completed", "s001": "completed", "s002": "completed", "s003": "not_started"}
+    assert result["document_covered"] == "60%" and result["sections_completed"] == "3 of 4"
+    assert lesson.resolve("next") == 3  # "continue" picks up after what's done
+    assert Lesson("Test Doc", lesson.sections, lesson.chunks, tmp_path / "progress.json").progress.done == {0, 1, 2}
+
+
+def test_parent_status_rolls_up_from_children_and_partial_is_in_progress():
+    lesson = make_lesson()
+    lesson.mark("1.1")
+    assert statuses(lesson)["s000"] == "in_progress"  # one of two subsections done
+    lesson.read("s002")  # reading the other one finishes the chapter
+    assert statuses(lesson)["s000"] == "completed"
+    lesson.read("s003")  # half of chapter 2 read
+    assert statuses(lesson)["s003"] == "in_progress"
+
+
+def test_unmark_clears_read_and_marked_content():
+    lesson = make_lesson()
+    lesson.read("start"), lesson.read("next")  # 1.1 read
+    lesson.mark("chapter 1")
+    lesson.mark("1.1", completed=False)
+    assert statuses(lesson) == {"s000": "in_progress", "s001": "not_started", "s002": "completed", "s003": "not_started"}
+    lesson.mark("all")
+    assert set(statuses(lesson).values()) == {"completed"} and lesson.percent_covered() == 100
+    lesson.mark("everything", completed=False)
+    assert set(statuses(lesson).values()) == {"not_started"} and lesson.percent_covered() == 0
+
+
+def test_mark_resolves_numbers_titles_ids_and_points():
+    lesson = make_lesson()
+    assert lesson.resolve_section("point 2").section_id == "s003"  # "chapter 2 practice" by number
+    assert lesson.resolve_section("s002").title == "1.2 Rules"
+    assert lesson.resolve_section("practice").section_id == "s003"
+    assert lesson.resolve_section("page:5").section_id == "s003"
+    with pytest.raises(LessonError, match="No section matches"):
+        lesson.mark("quantum gravity")
+
+
+def test_old_progress_files_still_load(tmp_path):
+    (tmp_path / "progress.json").write_text('{"cursor": 1, "read": [0, 1], "last_summary": "x", "updated_at": "t"}')
+    lesson = make_lesson(tmp_path)
+    assert lesson.progress.done == set() and statuses(lesson)["s001"] == "completed"
+
+
+def _locked_replace(times):
+    """os.replace that fails like Windows does while another process has the target open."""
+    import os
+    real = os.replace
+    state = {"left": times}
+
+    def fake(src, dst):
+        if state["left"]:
+            state["left"] -= 1
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        real(src, dst)
+    return fake
+
+
+def test_progress_save_retries_while_the_file_is_briefly_locked(tmp_path, monkeypatch):
+    import tutor.lesson as lesson_mod
+    lesson = make_lesson(tmp_path)
+    monkeypatch.setattr(lesson_mod.os, "replace", _locked_replace(2))
+    lesson.read("next")
+    assert Progress.load(tmp_path / "progress.json").read == {0}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_locked_progress_file_never_breaks_teaching(tmp_path, monkeypatch):
+    import tutor.lesson as lesson_mod
+    lesson = make_lesson(tmp_path)
+    monkeypatch.setattr(lesson_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(lesson_mod.os, "replace", _locked_replace(100))
+    passage = lesson.read("next")  # the save fails, the read still works
+    assert passage["text"]
+    assert lesson.progress.read == {0}
+    assert not list(tmp_path.glob("*.tmp"))
+    monkeypatch.undo()
+    lesson.read("next")  # the next change saves everything, including the earlier read
+    assert Progress.load(tmp_path / "progress.json").read == {0, 1}

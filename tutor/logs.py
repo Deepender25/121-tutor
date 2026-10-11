@@ -1,8 +1,9 @@
 """Logging for the app: readable coloured console output + rotating log files in <project>/logs/.
 
-    logs/voice-tutor.log   everything at DEBUG (rotates at 5 MB, keeps 5)
-    logs/errors.log        warnings and errors only
-    logs/setup.log         pip output from run.bat (written by run.bat, not here)
+    logs/voice-tutor.log   API server: everything at DEBUG (rotates at 5 MB, keeps 5)
+    logs/errors.log        API server: warnings and errors only
+    logs/ui.log            UI server (ui.py): its own file, so the two processes never rotate the same one
+    logs/setup.log         run.bat steps, pip and npm output
 """
 
 import atexit
@@ -17,6 +18,7 @@ from tutor import config
 LOG_DIR = config.PROJECT_ROOT / "logs"
 MAIN_LOG = LOG_DIR / "voice-tutor.log"
 ERROR_LOG = LOG_DIR / "errors.log"
+UI_LOG = LOG_DIR / "ui.log"
 
 _COLORS = {"DEBUG": "\x1b[90m", "INFO": "\x1b[0m", "WARNING": "\x1b[33m", "ERROR": "\x1b[31m", "CRITICAL": "\x1b[41m"}
 _DIM, _RESET, _CYAN = "\x1b[90m", "\x1b[0m", "\x1b[36m"
@@ -108,7 +110,7 @@ class _NonBlockingQueueHandler(logging.handlers.QueueHandler):
             pass
 
 
-def setup_logging(console_level: int = logging.INFO) -> None:
+def setup_logging(console_level: int = logging.INFO, main_log=MAIN_LOG, error_log=ERROR_LOG) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
@@ -131,16 +133,19 @@ def setup_logging(console_level: int = logging.INFO) -> None:
     atexit.register(listener.stop)
 
     file_fmt = logging.Formatter("%(asctime)s.%(msecs)03d  %(levelname)-7s %(name)-18s %(message)s", "%Y-%m-%d %H:%M:%S")
-    main = logging.handlers.RotatingFileHandler(MAIN_LOG, maxBytes=5_000_000, backupCount=5, encoding="utf-8")
+    main = logging.handlers.RotatingFileHandler(main_log, maxBytes=5_000_000, backupCount=5, encoding="utf-8")
     main.setLevel(logging.DEBUG)
     main.setFormatter(file_fmt)
     root.addHandler(main)
-    errors = logging.handlers.RotatingFileHandler(ERROR_LOG, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
-    errors.setLevel(logging.WARNING)
-    errors.setFormatter(file_fmt)
-    root.addHandler(errors)
+    handlers = [main, queue_handler]
+    if error_log is not None:
+        errors = logging.handlers.RotatingFileHandler(error_log, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+        errors.setLevel(logging.WARNING)
+        errors.setFormatter(file_fmt)
+        root.addHandler(errors)
+        handlers.append(errors)
 
-    for handler in (main, errors, queue_handler):
+    for handler in handlers:
         handler.addFilter(_DropConnectionResets())
         handler.addFilter(_Rename())
     for name, level in _QUIET.items():

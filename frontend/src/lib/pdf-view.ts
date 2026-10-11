@@ -3,110 +3,135 @@
 // is rendered by the server only when it comes near the screen, at the resolution the screen needs, and
 // released again when it's far away, so long documents stay light. Zooming (buttons, Ctrl+wheel, trackpad
 // pinch) and resizing keep the spot you're reading in place.
-import { api } from "./api.js";
-import { h } from "./ui.js";
+//
+// It owns the children of `el` (the .viewer-stage element React renders empty).
+import { api } from "./api";
+import { h } from "./dom";
 
 const FIT_MAX = 920; // 100% = fit the width, but never wider than this (comfortable in full screen)
 const PAD = 22; // horizontal padding around the pages (matches .pdf-pages)
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+interface Page { n: number; w: number; h: number; r: number; el: HTMLElement; img: HTMLImageElement; scale: number }
+interface Anchor { p: Page; y: number; frac: number; x: number }
+
+export interface PdfViewOptions {
+  el: HTMLElement;
+  onPage?: (n: number, total: number) => void;
+  onZoom?: (zoom: number) => void;
+  onUserScroll?: () => void;
+}
 
 export class PdfView {
-  constructor({ onPage = () => {}, onZoom = () => {}, onUserScroll = () => {} } = {}) {
+  el: HTMLElement;
+  docId: string | null = null;
+  page = 1;
+  zoom = 1;
+  private onPage: (n: number, total: number) => void;
+  private onZoom: (zoom: number) => void;
+  private onUserScroll: () => void;
+  private inner: HTMLElement;
+  private pages: Page[] = [];
+  private fit = 600;
+  private highlights: HTMLElement[] = [];
+  private flags = new Set<string>();
+  private raf = 0;
+  private rescaleTimer: ReturnType<typeof setTimeout> | undefined;
+  private token = 0;
+  private pending: { n: number; frac: number } | null = null; // where to go once visible (can't scroll while hidden)
+  private io: IntersectionObserver;
+  private ro: ResizeObserver;
+  private listeners: [string, EventListener, AddEventListenerOptions?][] = [];
+
+  constructor({ el, onPage = () => {}, onZoom = () => {}, onUserScroll = () => {} }: PdfViewOptions) {
+    this.el = el;
     this.onPage = onPage;
     this.onZoom = onZoom;
     this.onUserScroll = onUserScroll;
-    this.el = h("div", { class: "viewer-stage scroll", tabindex: "-1" });
     this.inner = h("div", { class: "pdf-pages" });
-    this.docId = null;
-    this.pages = []; // { n, w, h, r, el, img, scale }
-    this.page = 1;
-    this.zoom = 1;
-    this.fit = 600;
-    this.highlights = [];
-    this.flags = new Set();
-    this.raf = 0;
-    this.rescaleTimer = 0;
-    this.token = 0;
-    this.pending = null; // { n, frac } to scroll to once the viewer is visible (it can't scroll while hidden)
 
     // Pages within ~1.5 screens are rendered; pages that leave that band are released.
     this.io = new IntersectionObserver((entries) => {
       for (const e of entries) {
-        const p = this.pages[Number(e.target.dataset.n) - 1];
+        const p = this.pages[Number((e.target as HTMLElement).dataset.n) - 1];
         if (!p) continue;
-        if (e.isIntersecting) this._load(p);
-        else this._unload(p);
+        if (e.isIntersecting) this.load(p);
+        else this.unload(p);
       }
     }, { root: this.el, rootMargin: "150% 0px" });
-    this.ro = new ResizeObserver(() => this._schedule("layout"));
+    this.ro = new ResizeObserver(() => this.schedule("layout"));
     this.ro.observe(this.el);
-    this.el.addEventListener("scroll", () => this._schedule("scroll"), { passive: true });
+
+    const on = (type: string, fn: EventListener, opts?: AddEventListenerOptions) => {
+      this.el.addEventListener(type, fn, opts);
+      this.listeners.push([type, fn, opts]);
+    };
+    on("scroll", () => this.schedule("scroll"), { passive: true });
     // Scrolling by hand (as opposed to follow-along moving the page) is reported, so following can pause.
     const byHand = () => { if (this.pages.length) this.onUserScroll(); };
-    this.el.addEventListener("wheel", (e) => { if (!e.ctrlKey) byHand(); }, { passive: true });
-    this.el.addEventListener("touchmove", byHand, { passive: true });
-    this.el.addEventListener("pointerdown", (e) => { if (e.target === this.el) byHand(); }); // scrollbar
-    this.el.addEventListener("keydown", (e) => {
+    on("wheel", ((e: WheelEvent) => { if (!e.ctrlKey) byHand(); }) as EventListener, { passive: true });
+    on("touchmove", byHand, { passive: true });
+    on("pointerdown", ((e: PointerEvent) => { if (e.target === this.el) byHand(); }) as EventListener); // scrollbar
+    on("keydown", ((e: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) byHand();
-    });
-    this.el.addEventListener("wheel", (e) => {
+    }) as EventListener);
+    on("wheel", ((e: WheelEvent) => {
       if (!e.ctrlKey || !this.pages.length) return; // trackpad pinch arrives as Ctrl+wheel
       e.preventDefault();
       this.setZoom(this.zoom * Math.exp(-e.deltaY * 0.0025), e.clientY - this.el.getBoundingClientRect().top);
-    }, { passive: false });
+    }) as EventListener, { passive: false });
   }
 
   get total() { return this.pages.length; }
 
   // Show a document. Resolves false if another open() superseded this one.
-  async open(docId, fallbackTotal = 1) {
+  async open(docId: string, fallbackTotal = 1): Promise<boolean> {
     if (docId === this.docId && this.pages.length) return true;
     const token = ++this.token;
-    let sizes = null;
+    let sizes: [number, number][] | null = null;
     try { sizes = (await api.pageSizes(docId)).sizes; } catch { /* lay out as Letter pages instead */ }
     if (token !== this.token) return false;
-    if (!sizes?.length) sizes = Array.from({ length: Math.max(1, fallbackTotal) }, () => [612, 792]);
-    this._reset();
+    if (!sizes?.length) sizes = Array.from({ length: Math.max(1, fallbackTotal) }, () => [612, 792] as [number, number]);
+    this.reset();
     this.docId = docId;
     const widths = sizes.map(([w]) => w).sort((a, b) => a - b);
     const ref = widths[Math.floor(widths.length / 2)] || 612; // pages wider than usual (landscape) stay wider
     this.pages = sizes.map(([w, hgt], i) => {
-      const img = h("img", { alt: `Page ${i + 1}`, draggable: "false", decoding: "async" });
+      const img = h("img", { alt: `Page ${i + 1}`, draggable: "false", decoding: "async" }) as HTMLImageElement;
       const el = h("div", { class: "pdf-page", dataset: { n: String(i + 1) },
         style: { "--r": (w / ref).toFixed(4), "--ar": `${w} / ${hgt}` } }, img);
-      const p = { n: i + 1, w, h: hgt, r: w / ref, el, img, scale: 0 };
       img.addEventListener("load", () => { if (img.getAttribute("src")) el.classList.add("ready"); });
-      return p;
+      return { n: i + 1, w, h: hgt, r: w / ref, el, img, scale: 0 };
     });
     this.inner.replaceChildren(...this.pages.map((p) => p.el));
     this.el.replaceChildren(this.inner);
-    this.fit = this._fitWidth();
-    this._applyWidth();
+    this.fit = this.fitWidth();
+    this.applyWidth();
     this.el.scrollTop = 0;
     this.el.scrollLeft = 0;
     this.pending = this.el.clientWidth ? null : { n: 1, frac: 0 };
-    this._setPage(1, true);
+    this.setPage(1, true);
     for (const p of this.pages) this.io.observe(p.el);
     return true;
   }
 
   // Replace the pages with a message (no document, or an error).
-  empty(node) {
+  empty(node: Node) {
     this.token++;
-    this._reset();
+    this.reset();
     this.docId = null;
     this.el.replaceChildren(node);
   }
 
-  goTo(n, behavior) {
+  goTo(n: number, behavior?: ScrollBehavior) {
     const p = this.pages[clamp(Math.round(n) || 1, 1, this.total) - 1];
     if (!p) return;
-    if (!this.el.clientWidth) { this.pending = { n: p.n, frac: 0 }; this._setPage(p.n); return; }
+    if (!this.el.clientWidth) { this.pending = { n: p.n, frac: 0 }; this.setPage(p.n); return; }
     const far = Math.abs(p.n - this.page) > 3;
     this.el.scrollTo({ top: p.el.offsetTop - 12, behavior: behavior || (far ? "auto" : "smooth") });
-    this._setPage(p.n);
+    this.setPage(p.n);
   }
 
   next() { this.goTo(this.page + 1); }
@@ -115,7 +140,7 @@ export class PdfView {
   // rects: [[x0, y0, x1, y1]] as fractions of the page. scroll: "reveal" brings the highlight into view only
   // if it isn't comfortably visible already (follow-along); true always moves it to the upper third; false
   // just paints it.
-  highlight(n, rects, scroll = true) {
+  highlight(n: number, rects: number[][], scroll: boolean | "reveal" = true) {
     this.clearHighlight();
     const p = this.pages[n - 1];
     if (!p || !rects?.length) return;
@@ -143,14 +168,14 @@ export class PdfView {
   }
 
   // anchorY: where in the view to keep still (px from the top); defaults to the reading line.
-  setZoom(z, anchorY) {
+  setZoom(z: number, anchorY?: number) {
     const zoom = clamp(Math.round(z * 100) / 100, ZOOM_MIN, ZOOM_MAX);
     if (zoom === this.zoom) return;
-    const anchor = this._anchor(anchorY);
+    const anchor = this.anchor(anchorY);
     this.zoom = zoom;
-    this._applyWidth(anchor);
+    this.applyWidth(anchor);
     this.onZoom(zoom);
-    this._rescaleSoon();
+    this.rescaleSoon();
   }
 
   zoomIn() { this.setZoom(this.zoom >= 1 ? this.zoom + 0.25 : this.zoom + 0.1); }
@@ -164,28 +189,31 @@ export class PdfView {
     this.ro.disconnect();
     cancelAnimationFrame(this.raf);
     clearTimeout(this.rescaleTimer);
+    for (const [type, fn, opts] of this.listeners) this.el.removeEventListener(type, fn, opts);
+    this.listeners = [];
+    this.el.replaceChildren();
   }
 
   // ---------------------------------------------------------------- internals
 
-  _reset() {
+  private reset() {
     this.io.disconnect();
     this.clearHighlight();
     this.pages = [];
     clearTimeout(this.rescaleTimer);
   }
 
-  _fitWidth() {
+  private fitWidth() {
     return Math.max(160, Math.min(FIT_MAX, this.el.clientWidth - PAD * 2));
   }
 
-  _applyWidth(anchor) {
+  private applyWidth(anchor?: Anchor | null) {
     this.inner.style.setProperty("--page-w", `${Math.round(this.fit * this.zoom)}px`);
-    if (anchor) this._restore(anchor);
+    if (anchor) this.restore(anchor);
   }
 
   // Coalesce scroll and resize work into one frame.
-  _schedule(flag) {
+  private schedule(flag: string) {
     this.flags.add(flag);
     if (this.raf) return;
     this.raf = requestAnimationFrame(() => {
@@ -197,39 +225,39 @@ export class PdfView {
         // First layout since becoming visible: size the pages, then go where we were asked to while hidden.
         const { n, frac } = this.pending;
         this.pending = null;
-        this.fit = this._fitWidth();
-        this._applyWidth();
+        this.fit = this.fitWidth();
+        this.applyWidth();
         const p = this.pages[n - 1];
         if (p) this.el.scrollTop = Math.max(0, p.el.offsetTop + frac * p.el.offsetHeight - (frac ? this.el.clientHeight * 0.28 : 12));
-        this._rescaleSoon();
+        this.rescaleSoon();
       } else if (flags.has("layout")) {
-        const fit = this._fitWidth();
+        const fit = this.fitWidth();
         if (Math.abs(fit - this.fit) >= 1) {
-          const anchor = this._anchor(0);
+          const anchor = this.anchor(0);
           this.fit = fit;
-          this._applyWidth(anchor);
-          this._rescaleSoon();
+          this.applyWidth(anchor);
+          this.rescaleSoon();
         }
       }
-      this._trackPage();
+      this.trackPage();
     });
   }
 
-  _trackPage() {
+  private trackPage() {
     const el = this.el;
     const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
-    const p = atEnd ? this.pages[this.total - 1] : this._pageAt(el.scrollTop + el.clientHeight * 0.4);
-    if (p) this._setPage(p.n);
+    const p = atEnd ? this.pages[this.total - 1] : this.pageAt(el.scrollTop + el.clientHeight * 0.4);
+    if (p) this.setPage(p.n);
   }
 
-  _setPage(n, force = false) {
+  private setPage(n: number, force = false) {
     if (n === this.page && !force) return;
     this.page = n;
     this.onPage(n, this.total);
   }
 
   // Last page whose top is above y (content coordinates).
-  _pageAt(y) {
+  private pageAt(y: number): Page {
     let lo = 0, hi = this.pages.length - 1, found = 0;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
@@ -238,10 +266,10 @@ export class PdfView {
     return this.pages[found];
   }
 
-  _anchor(y = this.el.clientHeight * 0.4) {
+  private anchor(y = this.el.clientHeight * 0.4): Anchor | null {
     if (!this.pages.length) return null;
     const el = this.el;
-    const p = this._pageAt(el.scrollTop + y);
+    const p = this.pageAt(el.scrollTop + y);
     return {
       p, y,
       frac: (el.scrollTop + y - p.el.offsetTop) / (p.el.offsetHeight || 1),
@@ -249,21 +277,21 @@ export class PdfView {
     };
   }
 
-  _restore(a) {
+  private restore(a: Anchor) {
     const el = this.el;
     el.scrollTop = a.p.el.offsetTop + a.frac * a.p.el.offsetHeight - a.y;
     if (el.scrollWidth > el.clientWidth) el.scrollLeft = a.x * el.scrollWidth - el.clientWidth / 2;
   }
 
-  _scaleFor(p) {
+  private scaleFor(p: Page) {
     const cssWidth = this.fit * this.zoom * p.r;
     const raw = (cssWidth * (window.devicePixelRatio || 1)) / p.w;
     return clamp(Math.ceil(raw * 4) / 4, 0.75, 3); // quarter steps keep the server's render cache useful
   }
 
-  _load(p) {
-    const scale = this._scaleFor(p);
-    if (p.scale === scale) return;
+  private load(p: Page) {
+    const scale = this.scaleFor(p);
+    if (p.scale === scale || !this.docId) return;
     p.scale = scale;
     const url = api.pageUrl(this.docId, p.n, scale);
     if (!p.img.getAttribute("src")) { p.img.src = url; return; }
@@ -273,17 +301,17 @@ export class PdfView {
     next.src = url;
   }
 
-  _unload(p) {
+  private unload(p: Page) {
     if (!p.img.getAttribute("src")) return;
     p.img.removeAttribute("src");
     p.el.classList.remove("ready");
     p.scale = 0;
   }
 
-  _rescaleSoon() {
+  private rescaleSoon() {
     clearTimeout(this.rescaleTimer);
     this.rescaleTimer = setTimeout(() => {
-      for (const p of this.pages) if (p.scale) this._load(p);
+      for (const p of this.pages) if (p.scale) this.load(p);
     }, 260);
   }
 }

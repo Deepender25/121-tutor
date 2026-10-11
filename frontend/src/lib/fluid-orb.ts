@@ -79,7 +79,7 @@ void main() {
 }
 `;
 
-export function hexToRgb(hex) {
+export function hexToRgb(hex: string): [number, number, number] {
   let h = String(hex).replace("#", "").trim();
   if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
   const n = parseInt(h, 16);
@@ -88,12 +88,12 @@ export function hexToRgb(hex) {
 }
 
 // The orb colour for the current theme (CSS custom properties --orb-color / --orb-muted).
-export function themeOrbColor(muted = false) {
+export function themeOrbColor(muted = false): string {
   const css = getComputedStyle(document.documentElement);
   return (css.getPropertyValue(muted ? "--orb-muted" : "--orb-color") || "#2a2a2e").trim();
 }
 
-function compile(gl, type, src) {
+function compile(gl: WebGLRenderingContext, type: number, src: string): WebGLShader | null {
   const shader = gl.createShader(type);
   if (!shader) return null;
   gl.shaderSource(shader, src);
@@ -106,19 +106,39 @@ function compile(gl, type, src) {
   return shader;
 }
 
+export type OrbState = "idle" | "muted" | "listening" | "connecting" | "thinking" | "speaking";
+
 // How fast the fluid flows in each state (multiplier on time), and how much the voice level adds.
-const FLOW = { idle: 0.8, muted: 0.35, listening: 1, connecting: 2.4, thinking: 2.8, speaking: 1.2 };
-const LEVEL_FLOW = { listening: 3.5, speaking: 7 };
+const FLOW: Record<OrbState, number> = { idle: 0.8, muted: 0.35, listening: 1, connecting: 2.4, thinking: 2.8, speaking: 1.2 };
+const LEVEL_FLOW: Partial<Record<OrbState, number>> = { listening: 3.5, speaking: 7 };
 
 export class FluidOrb {
-  constructor({ size = 240, className = "", state = "idle" } = {}) {
+  size: number;
+  state: OrbState;
+  el: HTMLDivElement;
+  private canvas: HTMLCanvasElement;
+  private color: [number, number, number];
+  private target: [number, number, number];
+  private level = 0;
+  private smooth = 0;
+  private time = Math.random() * 100; // different orbs don't move in lockstep
+  private reduce: boolean;
+  private paused = false;
+  private wasConnected = false;
+  private last = 0;
+  private raf: number | null = null;
+  private gl: WebGLRenderingContext | null = null;
+  private glObjects: { program: WebGLProgram; vert: WebGLShader; frag: WebGLShader; buffer: WebGLBuffer | null } | null = null;
+  private uTime: WebGLUniformLocation | null = null;
+  private uColor: WebGLUniformLocation | null = null;
+  private onTheme: () => void;
+  private mq: MediaQueryList;
+
+  constructor({ size = 240, className = "", state = "idle" as OrbState } = {}) {
     this.size = size;
     this.state = state;
     this.color = hexToRgb(themeOrbColor(state === "muted"));
-    this.target = this.color.slice();
-    this.level = 0;
-    this.smooth = 0;
-    this.time = Math.random() * 100; // different orbs don't move in lockstep
+    this.target = [...this.color];
     this.el = document.createElement("div");
     this.el.className = `fluid-orb ${className}`.trim();
     this.el.dataset.slot = "fluid-orb";
@@ -127,14 +147,14 @@ export class FluidOrb {
     this.canvas = document.createElement("canvas");
     this.el.append(this.canvas);
     this.reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    this._onTheme = () => this.refreshColor();
-    window.addEventListener("vt-theme", this._onTheme);
-    this._mq = window.matchMedia("(prefers-color-scheme: dark)");
-    this._mq.addEventListener?.("change", this._onTheme);
-    if (!this._init()) this.el.classList.add("fluid-orb-fallback");
+    this.onTheme = () => this.refreshColor();
+    window.addEventListener("vt-theme", this.onTheme);
+    this.mq = window.matchMedia("(prefers-color-scheme: dark)");
+    this.mq.addEventListener?.("change", this.onTheme);
+    if (!this.init()) this.el.classList.add("fluid-orb-fallback");
   }
 
-  _init() {
+  private init(): boolean {
     const gl = this.canvas.getContext("webgl", { antialias: true, alpha: true, premultipliedAlpha: true });
     if (!gl) return false;
     const program = gl.createProgram();
@@ -172,11 +192,11 @@ export class FluidOrb {
     this.canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); this.destroy(); this.el.classList.add("fluid-orb-fallback"); });
 
     this.last = performance.now();
-    this.raf = requestAnimationFrame((now) => this._render(now));
+    this.raf = requestAnimationFrame((now) => this.render(now));
     return true;
   }
 
-  _render(now) {
+  private render(now: number) {
     if (!this.gl) return;
     if (!this.el.isConnected && this.wasConnected) { this.destroy(); return; }
     if (this.el.isConnected) this.wasConnected = true;
@@ -194,21 +214,21 @@ export class FluidOrb {
       this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
       this.el.style.setProperty("--level", this.smooth.toFixed(3));
     }
-    this.raf = this.reduce ? null : requestAnimationFrame((t) => this._render(t));
+    this.raf = this.reduce ? null : requestAnimationFrame((t) => this.render(t));
   }
 
-  setState(state) {
+  setState(state: OrbState) {
     this.state = state;
     this.target = hexToRgb(themeOrbColor(state === "muted"));
-    if (this.reduce && this.gl) this._render(performance.now());
+    if (this.reduce && this.gl) this.render(performance.now());
   }
 
   // Stop drawing while the orb is covered (e.g. by full-screen reading); the loop keeps its place.
-  setPaused(paused) {
+  setPaused(paused: boolean) {
     this.paused = paused;
   }
 
-  setLevel(level) {
+  setLevel(level: number) {
     this.level = Math.max(0, Math.min(1, level || 0));
   }
 
@@ -219,10 +239,10 @@ export class FluidOrb {
   destroy() {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = null;
-    window.removeEventListener("vt-theme", this._onTheme);
-    this._mq?.removeEventListener?.("change", this._onTheme);
+    window.removeEventListener("vt-theme", this.onTheme);
+    this.mq?.removeEventListener?.("change", this.onTheme);
     const gl = this.gl;
-    if (!gl) return;
+    if (!gl || !this.glObjects) return;
     const { program, vert, frag, buffer } = this.glObjects;
     gl.deleteProgram(program);
     gl.deleteShader(vert);

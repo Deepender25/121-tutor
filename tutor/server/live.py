@@ -90,7 +90,7 @@ class TurnRecorder:
         self.model = join_text(self.model, text)
 
     def ref(self, ui: dict) -> None:
-        if ui and ui.get("kind") in ("search", "passage", "web"):
+        if ui and ui.get("kind") in ("search", "passage", "web", "progress"):
             self.refs.append(without_text(ui))
 
     def flush(self) -> None:

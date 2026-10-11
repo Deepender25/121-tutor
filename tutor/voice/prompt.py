@@ -29,7 +29,7 @@ def _sources_block(nb: Notebook, cache: DocumentCache) -> str:
         shown = outline["sections"][:MAX_OUTLINE_LINES if active else 12]
         for s in shown:
             indent = "   " * s["level"]
-            done = " (covered)" if s["covered"] else ""
+            done = {"completed": " (completed)", "in_progress": " (in progress)"}.get(s["status"], "")
             lines.append(f"{indent}- {s['title']} (p. {s['pages']}, id {s['id']}){done}")
         if len(outline["sections"]) > len(shown):
             lines.append("   ... more sections: call get_outline for the full list")

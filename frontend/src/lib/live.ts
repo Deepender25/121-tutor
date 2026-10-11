@@ -2,26 +2,53 @@
 //   mic (any rate) -> worklet -> 16 kHz PCM16 -> WebSocket -> server -> Gemini
 //   Gemini -> server -> 24 kHz PCM16 -> scheduled AudioBuffers -> speakers
 // Events from the server (transcripts, tool activity, status) are passed to `onMessage`.
+// The WebSocket goes to this origin's /api, which Next.js proxies to the Python server.
+import type { ToolUI } from "./types";
 
 const OUTPUT_RATE = 24000;
+const WORKLET_URL = "/audio/recorder-worklet.js";
+
+export type LiveState = "idle" | "connecting" | "ready" | "reconnecting" | "closed";
+
+export type LiveMessage =
+  | { type: "transcript"; role: "user" | "model"; text: string }
+  | { type: "tool_call"; id: string; name: string; args?: Record<string, unknown> }
+  | { type: "tool_result"; id: string; name: string; ui?: ToolUI | null; error?: string }
+  | { type: "turn_complete" }
+  | { type: "interrupted" }
+  | { type: "notice"; text: string }
+  | { type: "status"; state: string }
+  | { type: "error"; message: string; fatal?: boolean };
+
+interface Handlers {
+  onMessage?: (msg: LiveMessage) => void;
+  onState?: (state: LiveState) => void;
+  onLevel?: (level: number) => void;
+  onError?: (message: string, fatal: boolean) => void;
+}
 
 export class LiveClient {
-  constructor(notebookId, { onMessage, onState, onLevel, onError }) {
+  notebookId: string;
+  state: LiveState = "idle";
+  micOn = false;
+  speakerMuted = false;
+  private h: Handlers;
+  private ws: WebSocket | null = null;
+  private ctx: AudioContext | null = null;
+  private gain: GainNode | null = null;
+  private analyser: AnalyserNode | null = null;
+  private stream: MediaStream | null = null;
+  private micSource: MediaStreamAudioSourceNode | null = null;
+  private recorder: AudioWorkletNode | null = null;
+  private micLevel = 0;
+  private sources = new Set<AudioBufferSourceNode>();
+  private nextTime = 0;
+  private pendingText: string[] = [];
+  private raf: number | null = null;
+
+  constructor(notebookId: string, handlers: Handlers) {
     this.notebookId = notebookId;
-    this.onMessage = onMessage;
-    this.onState = onState;
-    this.onLevel = onLevel;
-    this.onError = onError;
-    this.ws = null;
-    this.ctx = null;
-    this.state = "idle"; // idle | connecting | ready | reconnecting | closed
-    this.micOn = false;
-    this.speakerMuted = false;
-    this.micLevel = 0;
-    this.sources = new Set();
-    this.nextTime = 0;
-    this.pendingText = [];
-    this._raf = null;
+    this.h = handlers;
   }
 
   get active() {
@@ -45,9 +72,10 @@ export class LiveClient {
       if (mic && !this.micOn) await this.enableMic();
       return;
     }
-    this._setState("connecting");
+    this.setState("connecting");
     try {
-      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      this.ctx = new Ctx();
       if (this.ctx.state === "suspended") await this.ctx.resume();
       this.gain = this.ctx.createGain();
       this.gain.gain.value = this.speakerMuted ? 0 : 1;
@@ -55,19 +83,19 @@ export class LiveClient {
       this.analyser.fftSize = 512;
       this.gain.connect(this.analyser);
       this.analyser.connect(this.ctx.destination);
-      this._levelLoop();
-    } catch (e) {
-      this._fail("Your browser couldn't start audio. Try Chrome or Edge.");
+      this.levelLoop();
+    } catch {
+      this.fail("Your browser couldn't start audio. Try Chrome or Edge.");
       return;
     }
     if (mic) {
       const ok = await this.enableMic();
       if (!ok) { this.end(); return; }
     }
-    this._openSocket();
+    this.openSocket();
   }
 
-  _openSocket() {
+  private openSocket() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/api/notebooks/${this.notebookId}/live`);
     ws.binaryType = "arraybuffer";
@@ -76,25 +104,25 @@ export class LiveClient {
       for (const text of this.pendingText.splice(0)) ws.send(JSON.stringify({ type: "text", text }));
     };
     ws.onmessage = (e) => {
-      if (typeof e.data !== "string") { this._play(e.data); return; }
-      let msg;
+      if (typeof e.data !== "string") { this.play(e.data as ArrayBuffer); return; }
+      let msg: LiveMessage;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === "status") {
-        if (msg.state === "ready") this._setState("ready");
-        else if (msg.state === "reconnecting" || msg.state === "connecting") this._setState(msg.state);
-        else if (msg.state === "idle") this.onMessage?.({ type: "notice", text: "Voice session paused after a few quiet minutes. Tap the orb to continue." });
+        if (msg.state === "ready") this.setState("ready");
+        else if (msg.state === "reconnecting" || msg.state === "connecting") this.setState(msg.state);
+        else if (msg.state === "idle") this.h.onMessage?.({ type: "notice", text: "Voice session paused after a few quiet minutes. Tap the orb to continue." });
       } else if (msg.type === "interrupted") {
         this.flushAudio();
       } else if (msg.type === "error") {
-        this.onError?.(msg.message, !!msg.fatal);
+        this.h.onError?.(msg.message, !!msg.fatal);
       }
-      this.onMessage?.(msg);
+      this.h.onMessage?.(msg);
     };
     ws.onclose = () => {
-      if (this.ws === ws) this._teardown();
+      if (this.ws === ws) this.teardown();
     };
     ws.onerror = () => {
-      if (this.state === "connecting") this.onError?.("Couldn't connect to the voice server.", true);
+      if (this.state === "connecting") this.h.onError?.("Couldn't connect to the voice server.", true);
     };
   }
 
@@ -105,46 +133,47 @@ export class LiveClient {
     const ws = this.ws;
     this.ws = null;
     try { ws?.close(); } catch { /* ignore */ }
-    this._teardown();
+    this.teardown();
   }
 
-  _teardown() {
+  private teardown() {
     this.disableMic(true);
     this.flushAudio();
-    cancelAnimationFrame(this._raf);
-    this._raf = null;
+    if (this.raf !== null) cancelAnimationFrame(this.raf);
+    this.raf = null;
     if (this.ctx) { this.ctx.close().catch(() => {}); this.ctx = null; }
     this.ws = null;
     this.pendingText = [];
-    this._setState("idle");
-    this.onLevel?.(0);
+    this.setState("idle");
+    this.h.onLevel?.(0);
   }
 
-  _setState(state) {
+  private setState(state: LiveState) {
     if (this.state === state) return;
     this.state = state;
-    this.onState?.(state);
+    this.h.onState?.(state);
   }
 
-  _fail(message) {
-    this.onError?.(message, true);
-    this._setState("idle");
+  private fail(message: string) {
+    this.h.onError?.(message, true);
+    this.setState("idle");
   }
 
   // ---- microphone -------------------------------------------------------------------
 
-  async enableMic() {
+  async enableMic(): Promise<boolean> {
     if (this.micOn) return true;
     if (!navigator.mediaDevices?.getUserMedia) {
-      this.onError?.("Microphone isn't available here. Open the app at http://127.0.0.1 in Chrome or Edge.", false);
+      this.h.onError?.("Microphone isn't available here. Open the app at http://127.0.0.1 in Chrome or Edge.", false);
       return false;
     }
     try {
       if (!this.stream) {
+        if (!this.ctx) return false;
         this.stream = await navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         });
-        await this.ctx.audioWorklet.addModule("/js/audio/recorder-worklet.js");
+        await this.ctx.audioWorklet.addModule(WORKLET_URL);
         this.micSource = this.ctx.createMediaStreamSource(this.stream);
         this.recorder = new AudioWorkletNode(this.ctx, "recorder-processor");
         this.recorder.port.onmessage = (e) => {
@@ -160,13 +189,14 @@ export class LiveClient {
         this.recorder.connect(sink).connect(this.ctx.destination);
       }
       this.stream.getAudioTracks().forEach((t) => (t.enabled = true));
-      this.recorder.port.postMessage({ type: "enable", value: true });
+      this.recorder?.port.postMessage({ type: "enable", value: true });
       this.micOn = true;
-      this.onState?.(this.state);
+      this.h.onState?.(this.state);
       return true;
     } catch (e) {
-      const blocked = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
-      this.onError?.(blocked
+      const name = (e as Error)?.name;
+      const blocked = name === "NotAllowedError" || name === "SecurityError";
+      this.h.onError?.(blocked
         ? "Microphone access was blocked. Allow it in the address bar (lock icon), then try again."
         : "No microphone found. Plug one in or type your message instead.", false);
       return false;
@@ -189,7 +219,7 @@ export class LiveClient {
     } else if (this.stream) {
       this.stream.getAudioTracks().forEach((t) => (t.enabled = false));
     }
-    this.onState?.(this.state);
+    this.h.onState?.(this.state);
   }
 
   async toggleMic() {
@@ -199,7 +229,7 @@ export class LiveClient {
 
   // ---- text -------------------------------------------------------------------------
 
-  async sendText(text) {
+  async sendText(text: string) {
     if (!this.active) await this.start({ mic: false });
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: "text", text }));
     else this.pendingText.push(text);
@@ -207,13 +237,13 @@ export class LiveClient {
 
   // ---- playback ---------------------------------------------------------------------
 
-  setSpeakerMuted(muted) {
+  setSpeakerMuted(muted: boolean) {
     this.speakerMuted = muted;
     if (this.gain) this.gain.gain.value = muted ? 0 : 1;
   }
 
-  _play(arrayBuffer) {
-    if (!this.ctx) return;
+  private play(arrayBuffer: ArrayBuffer) {
+    if (!this.ctx || !this.gain) return;
     const pcm = new Int16Array(arrayBuffer);
     if (!pcm.length) return;
     const buffer = this.ctx.createBuffer(1, pcm.length, OUTPUT_RATE);
@@ -231,9 +261,9 @@ export class LiveClient {
     const wasSpeaking = this.sources.size === 1;
     src.onended = () => {
       this.sources.delete(src);
-      if (this.sources.size === 0) this.onState?.(this.state);
+      if (this.sources.size === 0) this.h.onState?.(this.state);
     };
-    if (wasSpeaking) this.onState?.(this.state);
+    if (wasSpeaking) this.h.onState?.(this.state);
   }
 
   flushAudio() {
@@ -242,10 +272,10 @@ export class LiveClient {
     }
     this.sources.clear();
     this.nextTime = 0;
-    this.onState?.(this.state);
+    this.h.onState?.(this.state);
   }
 
-  _levelLoop() {
+  private levelLoop() {
     const data = new Uint8Array(256);
     const tick = () => {
       if (!this.ctx) return;
@@ -258,9 +288,9 @@ export class LiveClient {
       } else if (this.micOn) {
         level = Math.min(1, this.micLevel * 6);
       }
-      this.onLevel?.(level);
-      this._raf = requestAnimationFrame(tick);
+      this.h.onLevel?.(level);
+      this.raf = requestAnimationFrame(tick);
     };
-    this._raf = requestAnimationFrame(tick);
+    this.raf = requestAnimationFrame(tick);
   }
 }

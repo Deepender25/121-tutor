@@ -53,10 +53,10 @@ def test_health_and_status(client):
     assert status["voice"] in status["voices"]
 
 
-def test_frontend_is_served(client):
-    r = client.get("/")
-    assert r.status_code == 200 and "Voice Tutor" in r.text
-    assert client.get("/js/main.js").status_code == 200
+def test_root_points_to_the_ui(client):
+    """The API server doesn't serve pages: opening it directly sends you to the UI server."""
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == f"{config.UI_URL}/"
 
 
 def test_notebook_has_indexed_source(client, notebook):
@@ -126,6 +126,32 @@ def test_tools_and_prompt(client, notebook):
     assert "{" not in prompt.split("# Ground rules")[0]  # every placeholder filled
 
 
+def test_progress_tool_and_outline_ticks(client, notebook):
+    from tutor.server.app import state
+    from tutor.tools import NotebookTools
+    from tutor.voice.prompt import build_system_prompt
+
+    doc = notebook["doc_id"]
+    client.post(f"/api/docs/{doc}/reset")
+    nb = state.notebooks.get(notebook["id"])
+    tools = NotebookTools(state.cache, state.embedder, nb.sources, nb.active_source)
+    # "mark everything up to point 2 as done"
+    out = tools.call("update_progress", {"target": "point 2", "through": True})
+    assert out.result["completed"] and out.result["marked"] == "everything up to and including 2 System Components"
+    assert out.ui == {"kind": "progress", "doc_id": doc, "completed": True,
+                      "summary": "Marked everything up to and including 2 System Components", "covered": out.result["document_covered"]}
+    status = {s["title"]: s["status"] for s in client.get(f"/api/docs/{doc}/outline").json()["sections"]}
+    assert status["1 Introduction"] == status["2.3 Filters"] == "completed" and status["3 Design"] == "not_started"
+    assert "1.1 Why harvest rainwater (p. 1-2, id s001) (completed)" in build_system_prompt(nb, state.cache)
+    # The outline's tick button: untick one subsection; its chapter becomes "in progress"
+    outline = client.post(f"/api/docs/{doc}/progress", json={"target": "s004", "completed": False}).json()
+    status = {s["title"]: s["status"] for s in outline["sections"]}
+    assert status["2.1 Catchment"] == "not_started" and status["2 System Components"] == "in_progress"
+    assert client.post(f"/api/docs/{doc}/progress", json={"target": "nonsense words"}).status_code == 400
+    assert "error" in tools.call("update_progress", {"target": "nonsense words"}).result
+    client.post(f"/api/docs/{doc}/reset")
+
+
 def test_shared_source_lifecycle(client, notebook):
     other = client.post("/api/notebooks", json={"name": "Other"}).json()
     job = upload_and_wait(client, other["id"])  # same file: reuses the index
@@ -175,19 +201,6 @@ def test_settings_save_does_not_hang(client):
     assert saved["voice"] == "Puck" and status["voice"] == "Puck"
     assert again["voice"] == "Kore" and final["voice"] == "Kore"
     assert client.put("/api/settings", json={"voice": "Nobody"}).status_code == 400
-
-
-def test_frontend_assets_are_versioned(client):
-    """Browsers must never run cached old modules after an update: every module URL carries ?v=."""
-    import json as _json
-    import re
-
-    html = client.get("/").text
-    imports = _json.loads(re.search(r'<script type="importmap">(.*?)</script>', html).group(1))["imports"]
-    assert "/js/ui.js" in imports and all("?v=" in url for url in imports.values())
-    version = imports["/js/main.js"].split("?v=")[1]
-    assert f'src="/js/main.js?v={version}"' in html and f'/css/app.css?v={version}' in html
-    assert client.get("/js/ui.js").headers["cache-control"] == "no-cache"
 
 
 def test_legacy_emoji_notebooks_get_an_icon():

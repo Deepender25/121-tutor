@@ -72,6 +72,42 @@ DECLARATIONS = [
         },
     },
     {
+        "name": "update_progress",
+        "description": (
+            "Mark sections of a source as completed or not completed: this is what shows as ticked in the "
+            "person's outline and in the covered percentage. Use it whenever the person asks to mark, tick, "
+            "finish, skip or unmark something ('mark everything up to 14 as done', 'I already know chapter 2', "
+            "'mark 3.1 as not done', 'mark it all complete'), and after you have fully taught a whole section "
+            "without read_passage (read_passage already marks what it reads). Never claim to have marked "
+            "anything without calling this."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "The section: its number ('14', '3.2', 'chapter 2'), words from its title, its id from "
+                        "get_outline ('s012'), or 'all' for the whole source."
+                    ),
+                },
+                "completed": {
+                    "type": "boolean",
+                    "description": "true to mark completed (default), false to mark not completed.",
+                },
+                "through": {
+                    "type": "boolean",
+                    "description": (
+                        "true = everything from the start of the source up to and including target "
+                        "('up to 14', 'till section 3'). false (default) = just that section and its subsections."
+                    ),
+                },
+                "source": SOURCE_PARAM,
+            },
+            "required": ["target"],
+        },
+    },
+    {
         "name": "web_search",
         "description": (
             "Search the web. You MUST call this whenever the person asks you to search the internet, the web, "
@@ -194,6 +230,16 @@ class NotebookTools:
                          "text": h["text"]})
         return ToolOutcome({"results": results}, {"kind": "search", "query": query, "refs": refs})
 
+    def update_progress(self, target: str, completed: bool = True, through: bool = False,
+                        source: str | None = None) -> ToolOutcome:
+        doc_id = self.resolve_source(source)
+        lesson = self.cache.get(doc_id).lesson
+        result = lesson.mark(target, completed=bool(completed), through=bool(through))
+        summary = f"{'Marked' if result['completed'] else 'Unmarked'} {result['marked']}"
+        ui = {"kind": "progress", "doc_id": doc_id, "completed": result["completed"], "summary": summary,
+              "covered": result["document_covered"]}
+        return ToolOutcome({"source": self._title(doc_id), **result}, ui)
+
     def web_search(self, query: str) -> ToolOutcome:
         result = web_search(query)
         links = [{"title": r["title"], "url": r["url"], "site": r["site"]} for r in result.get("results", [])]
@@ -204,6 +250,7 @@ class NotebookTools:
             "get_outline": self.get_outline,
             "read_passage": self.read_passage,
             "search_sources": self.search_sources,
+            "update_progress": self.update_progress,
             "web_search": self.web_search,
         }.get(name)
         if handler is None:

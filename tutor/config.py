@@ -49,9 +49,12 @@ FILES_DIR = DATA_ROOT / "files"  # uploaded PDFs, stored as <doc_id>.pdf
 NOTEBOOKS_DIR = DATA_ROOT / "notebooks"
 SETTINGS_FILE = DATA_ROOT / "settings.json"
 
-# Web app.
+# Web app: the UI (Next.js, frontend/) is what you open; it forwards /api to the Python API server.
 HOST = os.environ.get("VOICE_TUTOR_HOST", "127.0.0.1")
-PORT = int(os.environ.get("VOICE_TUTOR_PORT", "8765"))
+PORT = int(os.environ.get("VOICE_TUTOR_PORT", "8765"))  # UI
+API_PORT = int(os.environ.get("VOICE_TUTOR_API_PORT", "8766"))  # FastAPI (this package)
+UI_URL = f"http://{HOST}:{PORT}"
+API_URL = f"http://{HOST}:{API_PORT}"
 MAX_UPLOAD_MB = 200
 VOICES = ["Kore", "Puck", "Charon", "Zephyr", "Fenrir", "Leda", "Orus", "Aoede"]
 DEFAULT_VOICE = "Kore"

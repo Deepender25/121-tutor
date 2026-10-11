@@ -43,6 +43,12 @@ hf_cache/
 *.safetensors
 *.bin
 
+# ---- user interface (frontend/): packages and build output are recreated by run.bat
+frontend/node_modules/
+frontend/.next/
+frontend/next-env.d.ts
+*.tsbuildinfo
+
 # ---- editors & tools --------------------------------------------------------------------
 .vscode/
 .idea/

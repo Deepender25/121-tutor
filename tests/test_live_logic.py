@@ -55,3 +55,16 @@ def test_history_keeps_citations_but_not_passage_text():
     assert without_text(passage) == {"kind": "passage", "doc_id": "d", "page": 3, "snippet": "abc"}
     assert without_text(search)["refs"] == [{"doc_id": "d", "page": 1, "snippet": "s"}]
     assert "text" in search["refs"][0]  # the live event itself is untouched
+
+
+def test_embedding_crash_explanations(monkeypatch):
+    from tutor.retrieval import worker
+
+    monkeypatch.setattr(worker, "memory_mb", lambda: (8000, 5000))
+    info = {"cpu": "Intel(R) Celeron(R) N4020"}
+    illegal = worker.describe_crash(-1073741795, info)  # 0xC000001D as a signed exit code
+    assert "Celeron" in illegal and "illegal-instruction" in illegal and "embedder-crash.log" in illegal
+    assert "ran out of memory" in worker.describe_crash(0xC0000017, info)
+    assert "0xC0000005" in worker.describe_crash(-1073741819, info)  # access violation, plenty of memory
+    monkeypatch.setattr(worker, "memory_mb", lambda: (4000, 600))
+    assert "ran out of memory" in worker.describe_crash(-1073741819, info)  # same crash, almost no free memory

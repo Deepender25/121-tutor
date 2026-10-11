@@ -1,7 +1,7 @@
-"""FastAPI app: REST API for notebooks/sources/pages, the live voice WebSocket, and the static frontend."""
+"""FastAPI app: REST API for notebooks/sources/pages and the live voice WebSocket. The UI is a separate
+Next.js server (frontend/, ui.py) that forwards /api here."""
 
 import asyncio
-import json
 import logging
 import secrets
 import shutil
@@ -10,11 +10,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, WebSocket
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from tutor import config, web
+from tutor.lesson import LessonError
 from tutor.library import DocumentError, delete_document, doc_id_for, ingest, read_meta
 from tutor.notebooks import ICONS as NOTEBOOK_ICONS
 from tutor.server import pages
@@ -25,7 +25,6 @@ from tutor.tools import NotebookTools
 
 log = logging.getLogger("server")
 http_log = logging.getLogger("http")
-WEB_DIR = config.PROJECT_ROOT / "web"
 state = AppState()
 # Polled or high-volume GETs are logged at DEBUG (file only) so the console stays readable.
 _QUIET_GETS = ("/api/health", "/api/status", "/api/jobs/", "/api/docs/")
@@ -38,6 +37,7 @@ async def lifespan(_: FastAPI):
     yield
     log.info("Server shutting down")
     state.jobs.shutdown()
+    state.stop()
 
 
 app = FastAPI(title="Voice Tutor", lifespan=lifespan)
@@ -322,6 +322,25 @@ async def doc_outline(doc_id: str):
     return lesson.outline(max_level=3)
 
 
+class ProgressIn(BaseModel):
+    target: str
+    completed: bool = True
+    through: bool = False
+
+
+@app.post("/api/docs/{doc_id}/progress")
+async def mark_progress(doc_id: str, body: ProgressIn):
+    """Mark a section (or everything up to it, or 'all') completed / not completed. Returns the outline."""
+    _meta_or_404(doc_id)
+    await asyncio.to_thread(state.require_embedder)
+    lesson = state.cache.get(doc_id).lesson
+    try:
+        lesson.mark(body.target, completed=body.completed, through=body.through)
+    except LessonError as e:
+        raise HTTPException(400, str(e))
+    return lesson.outline(max_level=3)
+
+
 @app.post("/api/docs/{doc_id}/reset")
 async def reset_progress(doc_id: str):
     _meta_or_404(doc_id)
@@ -380,34 +399,7 @@ async def document_error(_, exc: DocumentError):
     return JSONResponse({"detail": str(exc)}, status_code=409)
 
 
-def _asset_version() -> str:
-    """Changes whenever any frontend file changes (newest modification time)."""
-    return str(int(max(p.stat().st_mtime for p in WEB_DIR.rglob("*") if p.is_file())))
-
-
 @app.get("/", include_in_schema=False)
-def index() -> HTMLResponse:
-    """index.html with every JS/CSS URL stamped ?v=<version> (via an import map for ES modules), so a
-    browser can never mix cached old modules with new ones after an update."""
-    version = _asset_version()
-    modules = sorted("/" + f.relative_to(WEB_DIR).as_posix() for f in (WEB_DIR / "js").glob("*.js"))
-    import_map = json.dumps({"imports": {m: f"{m}?v={version}" for m in modules}})
-    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
-    html = html.replace('href="/css/app.css"', f'href="/css/app.css?v={version}"')
-    entry = f'<script type="importmap">{import_map}</script><script type="module" src="/js/main.js?v={version}"></script>'
-    html = html.replace('<script type="module" src="/js/main.js"></script>', entry)
-    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
-
-
-class FrontendFiles(StaticFiles):
-    """Static frontend with `Cache-Control: no-cache`: browsers revalidate (cheap 304s) instead of
-    running stale JS/CSS after the app is updated."""
-
-    async def get_response(self, path, scope):
-        response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-cache"
-        return response
-
-
-# Static frontend last, so /api routes win.
-app.mount("/", FrontendFiles(directory=WEB_DIR, html=True), name="web")
+def index() -> RedirectResponse:
+    """This is the API server; the app itself is served by the UI server."""
+    return RedirectResponse(config.UI_URL + "/", status_code=307)

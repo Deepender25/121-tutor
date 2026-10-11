@@ -28,7 +28,9 @@ A **local web app** (NotebookLM-style) where each **notebook** holds one or more
 ## 2. Architecture
 
 ```
-Browser (web/)                         Local server (tutor/server, FastAPI)                 Google
+Browser ──► UI server (frontend/, Next.js :8765) ── /api/* and the voice WebSocket proxied ──► API (:8766)
+
+Browser (React UI)                     API server (tutor/server, FastAPI)                   Google
 ┌──────────────────────────┐  WS   ┌────────────────────────────────────────┐  WS   ┌──────────────────┐
 │ mic → worklet → 16k PCM ─┼──────►│ live.py bridge ── GeminiLiveSession ───┼──────►│ gemini-3.8-live  │
 │ speaker ◄─ 24k PCM ◄─────┼◄──────┤   tools run locally (BLOCKING):        │◄──────┤ STT·LLM·TTS·VAD  │
@@ -112,24 +114,25 @@ language (Hindi/English mixing mirrored), never talk over the user (3.8 proactiv
 - Idle sessions close after 5 minutes to save free-tier quota.
 - Turn transcripts + citations are saved to notebook history on `turn_complete` (and on barge-in).
 
-## 8. Web app (web/, no build step)
+## 8. Web app (frontend/: Next.js App Router, React, TypeScript — see §20)
 
-- Plain ES modules + one stylesheet; no Node toolchain needed. `run.bat` → server window → `app.py` → uvicorn.
+- `run.bat` → "Voice Tutor - API" window (`app.py` → uvicorn :8766) and "Voice Tutor - UI" window
+  (`ui.py` → `next start` :8765). Routes: `/` (notebooks), `/notebooks/[id]` (one notebook).
 - **Home**: notebook grid (create / rename / delete).
 - **Notebook**: Sources panel (upload with progress, active source, outline with progress ticks — click
   a section to have it taught) · Conversation (transcript, tool activity chips, citation chips, quick
   actions, composer, voice dock) · PDF viewer (continuous vertical scroll; follows teaching, highlights
   passages, opens PDF). Draggable splits between the panels; full-screen reading mode (§18).
-- **Voice mode**: WebGL **FluidOrb** (shader from the user-provided component, ported to vanilla JS) in
-  the dock and as a large orb on a focused stage with live captions; colour by state (blue listening,
-  violet speaking, teal looking things up, grey muted) and swirl speed by audio level.
+- **Voice mode**: WebGL **FluidOrb** (shader from the user-provided component, unchanged) in the dock and
+  as a large orb on a focused stage with live captions; flow speed and scale follow the audio level.
 - Light/dark/system themes; responsive down to phone width (tabbed panels); container queries for the
   chat column; reduced-motion respected.
 
 ## 9. Layout
 
 ```
-app.py              server entry point (run.bat starts it)   run.bat   venv + deps + .env + server window
+app.py              API server (run.bat: "Voice Tutor - API") run.bat   venv, deps, .env, UI build, 2 windows
+ui.py               UI build/serve (run.bat: "Voice Tutor - UI")
 console.py          text console (debug)                     ingest.py · query.py   CLIs
 prompts/system.md   conversation behaviour
 tutor/
@@ -138,7 +141,15 @@ tutor/
   retrieval/  embedder.py store.py search.py
   voice/  base.py gemini_live.py prompt.py
   server/  app.py live.py jobs.py pages.py state.py
-web/  index.html  css/app.css  js/{main,home,notebook,live,api,ui,fluid-orb}.js  js/audio/recorder-worklet.js
+frontend/
+  next.config.ts   /api rewrite to the API (incl. WebSocket), proxy limits
+  public/          favicon.svg, brand/mark.svg, audio/recorder-worklet.js
+  src/app/         layout.tsx (fonts, theme script, globals.css), page.tsx, notebooks/[id]/page.tsx,
+                   not-found.tsx, error.tsx, ui-health/route.ts
+  src/components/  Icon, overlays (toasts/dialogs/menus), Settings, AppShell, RouteStates,
+                   home/HomeView, notebook/{controller.ts, NotebookView.tsx}
+  src/lib/         api (browser), server-api (server rendering), live, pdf-view, fluid-orb, follow,
+                   store, status, theme, format, icons, types
 tests/  unit + API integration tests, fixtures/make_sample_pdf.py, questions_sample.yaml
 ```
 
@@ -300,10 +311,7 @@ never moved the page; and it yanked you back if you had scrolled away.
 How it works now:
 - **Material**: `read_passage` and `search_sources` results carry the full chunk text to the browser
   (stripped from saved history by `without_text`).
-- **Tracking** (`web/js/follow.js`): candidates are split into sentences; the last ~18 content words the
-  tutor has *spoken* are matched against them (IDF-weighted, recent words weigh more, a pull towards reading
-  forwards, hysteresis + a 1.2 s minimum between moves, with a re-check so a burst's last move isn't lost).
-  Replays of real answers follow sentence by sentence, e.g. the three eras of computing.
+- **Tracking** (`frontend/src/lib/follow.ts`): rebuilt in §24 (passage first, then sentence).
 - **Timing**: every transcript piece and tool result is applied at the moment its audio is heard:
   `LiveClient.playbackLag` (queued, unheard audio) delays it. Interruptions cancel what was never heard.
   Captions and the reading-mode bubble use the same timing, so they show what is being *said*.
@@ -316,4 +324,138 @@ How it works now:
   highlight stays. The highlight only scrolls when it isn't comfortably visible.
 - **Pause**: scrolling, paging, or clicking a citation pauses following (the highlight keeps tracking in
   place); a "Back to the tutor · p. N" pill jumps back; asking anything new resumes automatically.
+
+## 20. Frontend on Next.js (2026-10-10)
+
+- **Stack:** Next.js 16.3 (App Router, Turbopack), React 19.3, TypeScript 5.9 (strict). Versions pinned
+  exactly; `package-lock.json` committed. The Python FastAPI server stays the backend.
+- **Two processes:** the UI (`next start`, :8765, the address you open) and the API (uvicorn, :8766).
+  `next.config.ts` rewrites `/api/:path*` to the API. Verified in the installed Next source that external
+  rewrites also proxy WebSocket upgrades with no idle timeout, so the live voice socket goes through the
+  same origin. HTTP proxying defaults to a 30 s timeout and a 10 MB buffered body (larger bodies are cut
+  off), so `experimental.proxyTimeout` = 10 min and `proxyClientMaxBodySize` = 1 GB (PDFs up to 200 MB).
+- **Routes:** `/` and `/notebooks/[id]` are server-rendered per request (`connection()` + `no-store`) from
+  the API (`lib/server-api.ts`, `React.cache` so the page and its metadata share one request). Missing
+  notebooks return a real **404** (no root `loading.tsx`, so nothing streams before the check), the API
+  being down renders a "server offline" state with Retry (`router.refresh()`), unexpected errors use
+  `error.tsx` (`retry`, stable since 16.3). Old `/#/nb/<id>` links redirect to `/notebooks/<id>`.
+  Titles: "Voice Tutor" / "<notebook> · Voice Tutor". Back/Forward, new tabs and bookmarks work.
+- **Same look:** `globals.css` is the previous stylesheet unchanged except the font names; components
+  render the same markup and class names. Fonts are bundled (`@fontsource/inter` 400–700 static,
+  `@fontsource-variable/fraunces` with optical sizing), so nothing is fetched from Google and nothing flashes.
+  The theme is applied by an inline script before first paint (`suppressHydrationWarning` on `<html>`).
+- **Hydration-safe:** values that differ between server and browser (greeting, local times, day
+  separators, "2 hours ago") render after hydration (`useHydrated`). No hydration warnings in the console.
+- **Notebook page:** `controller.ts` holds all behaviour (voice session, follow-along, splits, reading mode,
+  uploads, keyboard) and exposes a small external store; `NotebookView.tsx` renders from it. Imperative
+  engines (PdfView, FluidOrb, LiveClient, FollowTracker) are the same code as before, typed. On open, the
+  page re-checks its data with the API (pages can come from the browser's back/forward cache).
+  No `router.prefetch` on hover: it caches the whole notebook page for 5 minutes (stale history).
+- **Launcher:** `ui.py build` checks Node ≥ 20.9, runs `npm ci` when `package-lock.json` changes and
+  `next build` when any frontend file or the API address changes (hash stamp); `ui.py serve` runs the
+  server with output to its window and `logs/ui.log`, and opens the browser once UI and API answer.
+  Next telemetry is disabled. The API server's `/` redirects to the UI.
+
+## 21. Embedding model in its own process (2026-10-10)
+
+Reported: on another computer, uploading a PDF parsed fine, then the whole app closed as soon as embedding
+began. Model loading had worked (it happens at start-up), so the crash was the first forward pass: a native
+crash inside PyTorch (no Python exception, so the job couldn't fail gracefully; the process just died).
+Likely causes on other hardware: a processor without the instructions some maths kernels use (common on
+budget Celeron/Pentium/Atom chips), memory running out, or a conflicting OpenMP runtime.
+
+- `tutor/retrieval/worker.py`: the model runs in a spawned worker process; the server talks to it over a
+  pipe (`EmbedderClient`, same interface as `Embedder`). The tokenizer stays in the server (chunking calls it
+  per paragraph) and loads in parallel with the worker.
+- Before importing torch the worker sets `KMP_DUPLICATE_LIB_OK=TRUE` (duplicate OpenMP must not abort), caps
+  threads, enables `faulthandler` into `logs/embedder-crash.log`, logs CPU name, cores, RAM, torch version and
+  the CPU kernels torch picked (AVX2/AVX-512/DEFAULT), and runs a warm-up with chunk-length inputs.
+- If the worker dies, the server explains why from the exit code (0xC000001D illegal instruction -> processor;
+  no-memory codes or little free RAM -> memory; 3 -> OpenMP abort; otherwise the code and free RAM), restarts
+  it in **safe mode** (`ATEN_CPU_CAPABILITY=default`, `ONEDNN_MAX_CPU_ISA=SSE41`, `MKL_ENABLE_INSTRUCTIONS=SSE4_2`,
+  oneDNN off, at most 4 threads) and retries the batch one at a time. If safe mode also crashes, the upload
+  fails with that explanation and the app keeps running. Out-of-memory errors retry with smaller batches
+  (8 -> 4 -> 2 -> 1).
+- Verified by killing the worker mid-indexing: it restarted in safe mode (torch reported DEFAULT kernels),
+  finished the document, and the vectors match normal mode. Batch size 16 -> 8 lowers peak memory. Start-up
+  31 s (tokenizer loads in parallel).
+- The API process also enables `faulthandler` (`logs/crash.log`).
+
+## 22. Text bar and voice views (2026-10-10)
+
+Modelled on ChatGPT's voice: one pill-shaped text bar. Idle: "Ask anything…" with the orb as the voice
+button on the right (it swaps for a round send button while there's text). Tapping the orb starts talking;
+the bar becomes mic toggle | "Type while you talk…" | **End**. Two views while talking, remembered in
+`localStorage["vt-voice-view"]`: **transcript** (default; the conversation stays visible and a 68 px
+FluidOrb floats over its bottom with the status, e.g. "Speaking · just talk to interrupt"; the list gets
+bottom padding and stays pinned to the latest message when the orb appears) and **orb** (the focused stage
+with the big orb and captions). Tapping the floating orb opens the orb view; tapping the big orb or "Show
+transcript" returns. The stage's own mic/End buttons were removed (the bar has them). Quick suggestions
+hide while talking. The bar's orb pauses rendering while hidden; the floating orb exists only while shown.
+
+## 23. Completion tracking (2026-10-10)
+
+The old logic only counted chunks read with read_passage, so answers given from search_sources (most
+teaching) never counted, jumping into a section counted only its first chunk, parents almost never
+completed, and nobody could mark anything ("I can't physically mark the content as completed").
+
+- **Model** (`tutor/lesson.py`): per chunk, `read` (read_passage) and `done` (marked). A section's status is
+  derived from its whole subtree: `completed` (every chunk finished), `in_progress` (some), `not_started`.
+  Parents roll up automatically; the percentage is finished chunks / all chunks (content-weighted).
+  Unmarking clears both read and done for the subtree. `progress.json` gains `done`; old files load.
+- **Marking** (`Lesson.mark(target, completed, through)`): target = section id, number ("14", "point 14",
+  "chapter 3"), title words, page, or "all"; `through` = from the start up to and including the target.
+  Completing moves the reading position to the end of what was completed when it reaches it, so "continue"
+  resumes at the first part that isn't done.
+- **Tutor tool** `update_progress(target, completed=true, through=false, source)`; the prompt's outline shows
+  each section's status, and the system prompt says to use the tool whenever asked to mark/skip/unmark and
+  after teaching a whole section without read_passage. The UI shows "Marked everything up to and including
+  2 System Components · 64% covered" and refreshes the outline and rings immediately; it's kept in history.
+- **UI**: the outline circle is a tick button (Shift+click = up to here), the title teaches; in progress is a
+  tinted circle; the outline menu has "Mark all as completed" and "Reset progress".
+  REST: `POST /api/docs/{id}/progress {target, completed, through}` → outline.
+- Verified live: "mark all the content completed till up to point 2" → the tutor called update_progress and
+  confirmed; unticking 2.1 made chapter 2 "in progress" (55%); Shift+click on 3.1 completed through 3.1 (82%).
+
+## 24. Follow-along v3: passage first, then sentence (2026-10-10)
+
+Complaint: the page "jumps to different sections". Cause, measured: the tracker matched the last 18
+spoken words against every sentence of every candidate at once, so with five search hits from five
+sections, one rare word plus one common one was enough to move to another page, and near-ties flipped
+back and forth (gated only by 1.2 s and a 1.2× margin). Small talk ("great, let's move on to the next
+topic") moved it too.
+
+How it works now (`frontend/src/lib/follow.ts`), in two steps because the two mistakes cost differently:
+- **Which passage** (a candidate chunk). Evidence per passage = distinctive words of the last 30 spoken
+  content words, each counted once, fading with a 12-word half-life; a word's weight is its rarity across
+  the candidate sentences, discounted when most passages contain it. A passage takes over only when its
+  evidence is ≥ 7 from ≥ 3 different words, ≥ 1.6× the current passage's (+1) and ≥ 1.35× every other
+  passage's, the lead holds for 700 ms, and the current passage has been shown ≥ 2.5 s. Search hits get a
+  slight rank prior; a passage opened with read_passage a 1.15 boost. When nothing qualifies the page
+  stays where it is.
+- **Which sentence** inside the passage: the last 12 content words, recency-weighted, need ≥ 3 matches
+  and a score ≥ 3, with a forward pull (next 1–3 sentences ×1.2, backwards ×0.75), a 1.25× margin over the
+  current sentence and ≥ 1.2 s between moves (a re-check keeps the last move of a burst).
+- New lookups keep the current sentence when it's among the new results; a new exchange clears the
+  evidence but not the highlight. More conversational words are stop words; topic words ("learning",
+  "understanding") deliberately aren't.
+
+Tuned against an independent judge, not by feel: every tutor answer in a real 150-turn session (148
+answers, 93 retrieved passages) is replayed at speaking pace with a fake clock, and each spoken sentence is
+labelled with the candidate sentence EmbeddingGemma finds closest (sentence-similarity prompt, labels
+only above 0.88 similarity, spot-checked by hand). Old → new:
+
+| | old | new |
+|---|---|---|
+| moves to the wrong place | 60 | 33 |
+| moves while the tutor wasn't using the sources | 27 | 12 |
+| jumps of more than a page | 38 | 5 |
+| back-and-forth (A→B→A) | 16 | 1 |
+| passage right / sentence ±1 | 90% / 77% | 90% / 76% |
+
+Results hold at 1–8 words per transcript piece and 2–3.5 words/s. Most remaining "wrong" passages are
+places where the notes say the same thing twice (definition on p3 and p41), where staying put is the
+better behaviour. Tried and rejected: word-pair evidence (more far jumps, no accuracy gain) and committing
+a pending switch when the answer ends (8 commits, 7 of them wrong). Verified live: a two-topic answer
+moved p5 (tank sizing) → p6 (maintenance) once, and a chapter explanation walked p3 → p4 in order.
 

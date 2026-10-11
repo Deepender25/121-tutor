@@ -6,8 +6,9 @@
    ========================================================================== */
 
 :root {
+  /* Fonts are bundled with the app (@fontsource): no Google request, works offline, no flash. */
   --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-display: "Fraunces Variable", "Fraunces", Georgia, "Times New Roman", serif;
 
   --bg: #f4f3ef;
   --bg-sunken: #ecebe6;
@@ -177,7 +178,7 @@ kbd {
   white-space: nowrap; pointer-events: none; z-index: 80; box-shadow: var(--shadow); animation: fadein .15s .35s both;
 }
 .dock [data-tip]:hover::after, .viewer-foot [data-tip]:hover::after, .float-dock [data-tip]:hover::after { top: auto; bottom: calc(100% + 8px); }
-.topbar-actions > [data-tip]:last-child::after, .dock-actions [data-tip]:last-child::after,
+.topbar-actions > [data-tip]:last-child::after, .dock-card > [data-tip]:last-child::after,
 .viewer-head [data-tip]::after { left: auto; right: 0; transform: none; }
 
 /* ---------------------------------------------------------------- buttons & controls */
@@ -476,6 +477,18 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 .outline-item.covered.current .node::after { display: none; }
 .outline-item .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .outline-item .p { font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+/* The circle is a tick button (completed / not), the title teaches the section. In progress = tinted. */
+.outline-item .node { padding: 0; cursor: pointer; color: inherit; transition: background .2s, border-color .2s, transform .18s var(--ease-spring); }
+.outline-item .node::before { content: ""; position: absolute; inset: -7px; border-radius: 50%; } /* bigger hit area */
+.outline-item .node:hover { border-color: var(--ink); transform: scale(1.18); }
+.outline-item:not(.covered) .node:hover { background: var(--accent-soft-2); }
+.outline-item .node:active { transform: scale(.9); }
+.outline-item.partial .node { border-color: var(--ink); background: var(--accent-soft-2); }
+.outline-item.covered .node .icon { animation: icon-pop .35s var(--ease-spring) both; }
+.outline-teach {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 0; border: 0;
+  background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
 .outline-item.l2 { padding-left: 22px; }
 .outline-item.l2 .node { width: 12px; height: 12px; margin-left: 2px; }
 .outline-item.l3 { padding-left: 36px; font-size: 12.5px; }
@@ -566,28 +579,62 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 .quick::-webkit-scrollbar { display: none; }
 .quick .suggestion { padding: 5px 11px; font-size: 12.5px; flex: none; border-radius: 999px; }
 .quick .suggestion .icon { width: 13px; height: 13px; }
+/* The text bar: one pill. Idle: type, or tap the orb on the right to talk (it turns into a send button
+   while there's text). While talking: mic on the left, the text box stays usable, End on the right. */
 .dock-card {
-  display: flex; align-items: center; gap: 10px; padding: 7px 7px 7px 8px; border-radius: 20px;
+  display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 18px; border-radius: 28px; min-height: 56px;
   background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow);
-  transition: border-color .15s, box-shadow .15s;
+  transition: border-color .15s, box-shadow .15s, padding .2s var(--ease);
 }
+.dock-card.live { padding-left: 6px; }
 .dock-card:focus-within { border-color: var(--ink); box-shadow: var(--shadow), var(--ring-focus); }
-.voice { display: flex; align-items: center; gap: 10px; flex: none; }
-.voice-state { display: flex; flex-direction: column; line-height: 1.2; min-width: 96px; padding-right: 8px; border-right: 1px solid var(--border); }
-.voice-state b { font-size: 13px; font-weight: 650; }
-.voice-state span { font-size: 11.5px; color: var(--muted); }
-.composer { flex: 1; display: flex; align-items: flex-end; gap: 6px; min-width: 0; }
+.composer { flex: 1; display: flex; align-items: center; min-width: 0; min-height: 42px; }
 .composer textarea {
   flex: 1; border: 0; outline: none; background: transparent; resize: none; max-height: 140px; min-height: 24px;
-  height: 40px; padding: 9px 4px; line-height: 1.45; font-size: 14.5px; min-width: 0; overflow-y: hidden;
+  height: 42px; padding: 10px 2px; line-height: 1.5; font-size: 14.5px; min-width: 0; overflow-y: hidden;
 }
+.dock-card.live .composer textarea { padding-left: 4px; }
+.dock-card .send-btn { width: 42px; height: 42px; border-radius: 50%; animation: pop .18s var(--ease-spring); }
+.orb-btn.bar-orb { width: 42px; height: 42px; }
+.orb-btn.bar-orb .orb-icon { width: 18px; height: 18px; right: -2px; bottom: -2px; }
+.orb-btn.bar-orb .orb-icon .icon { width: 10px; height: 10px; }
+.mic-btn {
+  width: 42px; height: 42px; flex: none; border-radius: 50%; display: grid; place-items: center; padding: 0;
+  border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--ink);
+  transition: background .15s, color .15s, border-color .15s, transform .12s; animation: pop .22s var(--ease-spring);
+}
+.mic-btn:hover { background: var(--surface-hover); }
+.mic-btn.off { background: var(--ink); color: var(--on-accent); border-color: var(--ink); }
+.mic-btn:active, .end-btn:active { transform: scale(.94); }
+.end-btn {
+  height: 42px; flex: none; display: inline-flex; align-items: center; gap: 7px; padding: 0 18px 0 15px; border-radius: 999px;
+  border: 0; background: var(--ink); color: var(--on-accent); font-size: 13.5px; font-weight: 600;
+  transition: background .15s, color .15s, transform .12s; animation: pop .22s var(--ease-spring);
+}
+.end-btn:hover { background: var(--red); color: #fff; }
+
+/* Transcript mode: the orb floats over the bottom of the conversation, above the text bar. */
+.live-orb {
+  position: absolute; left: 50%; bottom: 14px; z-index: 3; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; animation: live-orb-in .35s var(--ease);
+}
+.live-orb > * { pointer-events: auto; }
+@keyframes live-orb-in { from { opacity: 0; transform: translate(-50%, 12px) scale(.94); } to { opacity: 1; transform: translateX(-50%); } }
+.orb-btn.live-orb-btn { width: 68px; height: 68px; box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-lg); }
+.live-orb-btn[data-tip]:hover::after { top: auto; bottom: calc(100% + 8px); }
+.live-orb-label {
+  display: inline-flex; align-items: baseline; gap: 6px; height: 28px; padding: 5px 12px; border-radius: 999px; white-space: nowrap;
+  background: var(--glass); border: 1px solid var(--border); box-shadow: var(--shadow-sm); font-size: 12.5px;
+  backdrop-filter: saturate(1.4) blur(12px); -webkit-backdrop-filter: saturate(1.4) blur(12px);
+}
+.live-orb-label b { font-weight: 650; color: var(--ink); }
+.live-orb-label span { color: var(--muted); }
+.chat-main.live-transcript .messages { padding-bottom: 140px; } /* the latest message clears the orb */
 .composer textarea::placeholder { color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .send-btn { width: 38px; height: 38px; border-radius: 12px; border: 0; display: grid; place-items: center; background: var(--ink); color: var(--on-accent); flex: none; transition: opacity .15s, transform .12s; }
 .send-btn:disabled { opacity: .18; cursor: default; }
 .send-btn:not(:disabled):hover { opacity: .85; }
 .send-btn:not(:disabled):active { transform: scale(.93); }
-.dock-actions { display: flex; align-items: center; gap: 2px; }
-.dock-actions:not(:has(:not([hidden]))) { display: none; }
 
 /* the voice orb (WebGL FluidOrb): flows faster and swells with the voice level (--level) */
 .fluid-orb { --level: 0; position: relative; overflow: hidden; border-radius: 50%; flex: none; transform: scale(calc(1 + var(--level) * .07)); transition: transform .06s linear; }
@@ -621,7 +668,9 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 .voice-stage.show { display: flex; animation: fadein .3s var(--ease); }
 .stage-top { position: relative; align-self: flex-end; z-index: 2; }
 .stage-center { position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 0; overflow: hidden; }
-.stage-orb { position: relative; display: grid; place-items: center; margin-bottom: 12px; color: var(--ink); }
+.stage-orb { position: relative; display: grid; place-items: center; margin-bottom: 12px; color: var(--ink); cursor: pointer; border-radius: 50%; transition: transform .25s var(--ease-spring); }
+.stage-orb:hover { transform: scale(1.03); }
+.stage-orb:active { transform: scale(.97); }
 /* concentric rings that ripple with the voice level (solid strokes, no gradients) */
 .stage-orb::before, .stage-orb::after {
   content: ""; position: absolute; inset: -18%; border-radius: 50%; border: 1px solid var(--border-strong); pointer-events: none;
@@ -635,16 +684,6 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 .stage-activity { font-size: 13px; color: var(--muted); font-weight: 550; min-height: 18px; max-width: 560px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stage-caption { max-width: 600px; font-size: 18px; line-height: 1.55; color: var(--ink-2); min-height: 56px; max-height: 6.2em; overflow: hidden; }
 .stage-caption.user { color: var(--muted); font-style: italic; }
-.stage-controls { position: relative; z-index: 1; display: flex; gap: 22px; margin-top: 8px; flex: none; }
-.stage-ctl { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-.stage-btn {
-  width: 54px; height: 54px; border-radius: 50%; border: 1px solid var(--border-strong); display: grid; place-items: center;
-  background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); transition: transform .18s var(--ease-spring), background .15s, color .15s;
-}
-.stage-btn:hover { transform: scale(1.07); }
-.stage-btn .icon { width: 21px; height: 21px; }
-.stage-btn.off { background: var(--ink); color: var(--on-accent); border-color: var(--ink); }
-.stage-btn.end { background: var(--red); color: #fff; border-color: var(--red); }
 .voice-stage.compact { padding: 10px 16px 12px; }
 .voice-stage.compact .stage-top { position: absolute; top: 10px; right: 12px; }
 .voice-stage.compact .stage-center { gap: 6px; }
@@ -652,9 +691,6 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 .voice-stage.compact .stage-label { font-size: 19px; min-height: 24px; }
 .voice-stage.compact .stage-activity { display: none; }
 .voice-stage.compact .stage-caption { font-size: 15px; min-height: 0; max-height: 3.1em; }
-.voice-stage.compact .stage-controls { gap: 14px; margin-top: 4px; }
-.voice-stage.compact .stage-ctl span { display: none; }
-.voice-stage.compact .stage-btn { width: 44px; height: 44px; }
 .voice-stage.tiny .stage-caption { display: none; }
 
 /* ---------------------------------------------------------------- viewer */
@@ -827,13 +863,14 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 
 .panel.chat { container-type: inline-size; container-name: chat; }
 @container chat (max-width: 640px) {
-  .voice-state { display: none; }
   .messages-inner { padding: 0 16px; }
   .dock { padding: 0 10px 12px; }
   .suggestions { grid-template-columns: 1fr; }
 }
 @container chat (max-width: 420px) {
-  .orb-btn { width: 44px; height: 44px; }
+  .dock-card { padding-left: 14px; }
+  .end-btn { padding: 0 14px 0 12px; }
+  .orb-btn.live-orb-btn { width: 56px; height: 56px; }
 }
 
 @media (max-width: 980px) {

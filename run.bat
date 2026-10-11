@@ -1,12 +1,13 @@
 @echo off
 rem ==========================================================================
 rem  Voice Tutor launcher
-rem    1. Creates the virtual environment in .venv (inside this folder) if missing
-rem    2. Installs / updates dependencies into it (when requirements.lock changes
+rem    1. Creates the Python virtual environment in .venv (inside this folder) if missing
+rem    2. Installs / updates Python dependencies into it (when requirements.lock changes
 rem       or packages are missing). Full pip log: logs\setup.log
 rem    3. Creates .env from .env.example if missing
-rem    4. Starts the server in its own terminal window ("Voice Tutor - Server")
-rem       and opens the app in your browser. Server logs: logs\voice-tutor.log
+rem    4. Installs / builds the user interface (Next.js, needs Node.js 20.9+) when it changed
+rem    5. Starts two windows: "Voice Tutor - API" (Python) and "Voice Tutor - UI" (Next.js),
+rem       then opens the app in your browser. Logs: logs\voice-tutor.log and logs\ui.log
 rem  Drag a PDF onto this file to open it in a new notebook.
 rem ==========================================================================
 setlocal EnableExtensions
@@ -41,7 +42,7 @@ if not defined BASEPY (
     echo         ^(tick "Add python.exe to PATH"^), then run this file again.
     goto :fail
 )
-echo [1/4] Creating the virtual environment in .venv  ^(base: %BASEPY_DESC%^)
+echo [1/5] Creating the virtual environment in .venv  ^(base: %BASEPY_DESC%^)
 echo %ROOT% | findstr /i "OneDrive" >nul && (
     echo       Note: this folder is synced by OneDrive. The first install writes ~2 GB into .venv;
     echo       if it fails with "Access is denied", pause OneDrive syncing and run again.
@@ -62,25 +63,25 @@ if errorlevel 1 (
 )
 "%PY%" -c "import platform; print(platform.python_version())" > "%VENV%\pyversion.txt" 2>nul
 set /p PYVER=<"%VENV%\pyversion.txt"
-echo [1/4] Virtual environment: %VENV%  ^(Python %PYVER%^)
+echo [1/5] Virtual environment: %VENV%  ^(Python %PYVER%^)
 
 rem ---------------------------------------------------------------- 2. dependencies
 if not exist "%STAMP%" goto :install
 fc /b "requirements.lock" "%STAMP%" >nul 2>&1
 if errorlevel 1 (
-    echo [2/4] requirements.lock changed: updating dependencies
+    echo [2/5] requirements.lock changed: updating dependencies
     goto :install
 )
 "%PY%" -c "import importlib.util as u, sys; mods = ['fastapi', 'uvicorn', 'lancedb', 'torch', 'torchvision', 'sentence_transformers', 'google.genai', 'pymupdf4llm', 'ddgs']; sys.exit(0 if all(u.find_spec(m) for m in mods) else 1)" >nul 2>&1
 if errorlevel 1 (
-    echo [2/4] Some packages are missing or broken: reinstalling
+    echo [2/5] Some packages are missing or broken: reinstalling
     goto :install
 )
-echo [2/4] Dependencies are installed in the virtual environment
+echo [2/5] Python dependencies are installed in the virtual environment
 goto :env
 
 :install
-echo [2/4] Installing dependencies into .venv. The first time downloads ~1-2 GB and takes a few minutes.
+echo [2/5] Installing dependencies into .venv. The first time downloads ~1-2 GB and takes a few minutes.
 echo       Full log: logs\setup.log
 "%PY%" -m pip install --upgrade pip --disable-pip-version-check --quiet --log "%SETUPLOG%"
 if errorlevel 1 goto :install_failed
@@ -89,7 +90,7 @@ if errorlevel 1 goto :install_failed
 "%PY%" -c "import fastapi, uvicorn, lancedb, torch, torchvision, sentence_transformers, google.genai, pymupdf4llm, ddgs" >>"%SETUPLOG%" 2>&1
 if errorlevel 1 goto :install_failed
 copy /y "requirements.lock" "%STAMP%" >nul
-echo [2/4] Dependencies installed
+echo [2/5] Dependencies installed
 goto :env
 
 :install_failed
@@ -101,9 +102,9 @@ rem ---------------------------------------------------------------- 3. .env
 :env
 if not exist ".env" (
     copy /y ".env.example" ".env" >nul
-    echo [3/4] Created .env from .env.example
+    echo [3/5] Created .env from .env.example
 ) else (
-    echo [3/4] Found .env
+    echo [3/5] Found .env
 )
 findstr /r /c:"^GEMINI_API_KEY=..*" ".env" >nul 2>&1
 if errorlevel 1 (
@@ -111,21 +112,41 @@ if errorlevel 1 (
     echo       ^(get one at https://aistudio.google.com/apikey^), then restart.
 )
 
-rem ---------------------------------------------------------------- 4. server
-"%PY%" app.py --open-if-running %* 2>nul
-if not errorlevel 1 (
-    echo [4/4] The server is already running; opened it in your browser.
+rem ---------------------------------------------------------------- 4. user interface
+echo [4/5] User interface
+"%PY%" ui.py build
+if errorlevel 1 goto :fail
+
+rem ---------------------------------------------------------------- 5. servers
+set "API_UP=0"
+set "UI_UP=0"
+"%PY%" app.py --check >nul 2>&1 && set "API_UP=1"
+"%PY%" ui.py check >nul 2>&1 && set "UI_UP=1"
+if "%API_UP%%UI_UP%"=="11" (
+    echo [5/5] The app is already running; opening it in your browser.
+    "%PY%" ui.py open %*
     goto :done
 )
-echo [4/4] Starting the server in its own window: "Voice Tutor - Server"
-echo       The browser opens automatically when it's ready ^(first start also downloads
-echo       the ~1.5 GB embedding model once^). Logs: logs\voice-tutor.log
-start "Voice Tutor - Server" /D "%ROOT%" cmd /k call "%PY%" app.py %*
->>"%SETUPLOG%" echo Started server window
+if "%API_UP%"=="0" (
+    echo [5/5] Starting the API in its own window: "Voice Tutor - API"  ^(logs\voice-tutor.log^)
+    start "Voice Tutor - API" /D "%ROOT%" cmd /k call "%PY%" app.py
+    >>"%SETUPLOG%" echo Started API window
+)
+rem If only the API was missing (the UI was already up), open the app once the API is ready.
+if "%UI_UP%"=="0" (
+    echo [5/5] Starting the interface in its own window: "Voice Tutor - UI"  ^(logs\ui.log^)
+    echo       The browser opens automatically when both are ready ^(the first start also
+    echo       downloads the ~1.5 GB embedding model once^).
+    start "Voice Tutor - UI" /D "%ROOT%" cmd /k call "%PY%" ui.py serve %*
+    >>"%SETUPLOG%" echo Started UI window
+) else (
+    start "Voice Tutor - Opening" /MIN "%PY%" ui.py open --wait %*
+)
 
 :done
 echo.
-echo   You can close this window. To stop the app, close the "Voice Tutor - Server" window.
+echo   You can close this window. To stop the app, close the "Voice Tutor - API" and
+echo   "Voice Tutor - UI" windows.
 timeout /t 8 >nul 2>&1
 endlocal
 exit /b 0

@@ -26,13 +26,16 @@ class AppState:
 
     def load_embedder(self) -> None:
         started = time.perf_counter()
-        log.info("Loading the embedding model (%s) ...", config.EMBEDDING_MODEL)
+        log.info("Loading the embedding model (%s) in its own process ...", config.EMBEDDING_MODEL)
         try:
-            from tutor.retrieval.embedder import Embedder
+            from tutor.retrieval.worker import EmbedderClient, EmbeddingCrash
 
-            self.embedder = Embedder()
+            self.embedder = EmbedderClient()
             self.cache = DocumentCache(self.embedder)
-            log.info("Embedding model ready in %.1fs", time.perf_counter() - started)
+            log.info("Embeddings ready (%.1fs in total)", time.perf_counter() - started)
+        except EmbeddingCrash as e:  # crashed even in safe mode; the reason is in the message
+            log.error("%s", e)
+            self.embedder_error = str(e)
         except Exception as e:
             log.exception("Embedding model failed to load")
             self.embedder_error = str(e)
@@ -45,6 +48,10 @@ class AppState:
         for leftover in config.FILES_DIR.glob("upload-*.part"):  # interrupted uploads
             leftover.unlink(missing_ok=True)
         threading.Thread(target=self.load_embedder, name="embedder-load", daemon=True).start()
+
+    def stop(self) -> None:
+        if self.embedder is not None and hasattr(self.embedder, "close"):
+            self.embedder.close()
 
     def require_embedder(self, timeout: float = 180):
         if not self.embedder_ready.wait(timeout):
