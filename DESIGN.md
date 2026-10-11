@@ -601,3 +601,47 @@ node before stopping; odd trailing bytes are carried into the next chunk. Interr
 ("Voice session ended after 2m30s, 4 exchanges, 1 interruption"), so a real phone session shows whether echo still
 cuts in.
 
+## 28. The library, dark theme, tooltips and touch (2026-10-11)
+
+**Home is a library.** No hero logo and no icon cards: a quiet header ("Your library", counts, search, New notebook),
+a "Continue reading" card with the book you're in and the exact section and page, and a shelf where every notebook is
+a 3D book standing on a soft plinth with its name, PDFs/pages and position underneath, plus a blank "New notebook"
+book. An empty library shows one blank book and what the app does, in words. Long-press (touch) or right-click a book
+opens its menu (Open, Cover colour, Rename, Delete).
+
+**One system** (second pass, after review): every book on the page stands on the same plinth (one radius, one
+colour, one size: 192px tall, books 118×144 on desktop; 158px / 100px on phones), every section uses one heading
+style ("Continue reading", "Notebooks"), and captions line up across the shelf. "Continue reading" is no longer a
+large mostly-empty card that repeated the shelf: it's the book on its plinth with the notebook title, where you are
+(the section and the part inside it, not the whole breadcrumb), the page and which PDF, and Resume. "New notebook" is a
+normal shelf item: a dashed book exactly the size of a real one (the plus drawn in CSS) with a caption, so the row
+aligns. Search and the header button share a height (38px). Cover titles scale with their length (short ones larger).
+
+**Books** (`components/ui/book.tsx`): a port of the Vercel-style Book component to this project's CSS (the project
+has no Tailwind/shadcn, and adding a second styling system for one component would fight the design tokens; the
+original also needed a missing `useResponsive` hook and an external texture the CSP blocks). Same construction: cloth
+cover with binding shading, a page edge rotated 90° and a back cover, in 3D with container-query units; it turns
+on hover (mouse only) and presses on touch. Title in the display serif, a small rule and the PDF count.
+
+**Cover colours** (`lib/covers.ts`, `tutor/notebooks.py COVERS`): twelve muted book-cloth tones, each with a title
+ink that reads on it. Colours from a hash alone collided (two of two real notebooks landed on the same one), so a
+notebook stores its cover: new ones get the least-used colour (all twelve before any repeats), older files get one
+oldest-first on first load and keep it; `PATCH {cover}` changes it (picker with a live preview). Each PDF also has a
+colour from its content hash, shown as its spine in the sources list (the active one ringed), so a file looks the
+same everywhere. The notebook header shows the notebook's cover (click to change it) instead of an icon tile.
+
+**Dark theme**, redesigned as warm graphite instead of near-black: background #131312 < surface #1b1b19 < raised
+#20201e/#282826, so panels separate by lightness; warm off-white ink (#eeece7) and muted text with real contrast;
+borders and a faint highlight replace shadows that disappear on dark; inverted tooltips; book shadows deepened.
+
+**Tooltips** (`lib/tooltip.ts`): the CSS `::after` bubbles were clipped by scrolling panels, ran off the window
+edges, set `position: relative` on buttons that needed their own positioning, and stuck after a tap on touch. Now one
+fixed-position bubble on the body, placed from the element's box (below, flipping above when there's no room;
+`data-tip-side="top"` to prefer above), clamped 8px inside the window, shown after 450ms on mouse/pen hover (instantly
+when moving between buttons) or at once on keyboard focus, hidden on scroll, press, Escape, blur or leaving the window,
+and never on touch. Verified: the top-right Settings tooltip shifts left to stay on screen; touch shows none.
+
+**Touch.** `touch-action: manipulation` on controls (no double-tap-zoom delay); sticky :hover looks undone on touch
+browsers and replaced by pressed states (buttons scale, rows tint, books press in); hover-only controls always shown;
+long-press menus on books; no callout or text selection when long-pressing a book.
+

@@ -88,7 +88,7 @@ export const api = {
   notebooks: () => request<NotebookSummary[]>("GET", "/api/notebooks"),
   createNotebook: (name: string) => request<NotebookSummary>("POST", "/api/notebooks", { name }),
   notebook: (id: string) => request<Notebook>("GET", `/api/notebooks/${id}`),
-  updateNotebook: (id: string, patch: { name?: string; icon?: string; active_source?: string }) =>
+  updateNotebook: (id: string, patch: { name?: string; icon?: string; cover?: string; active_source?: string }) =>
     request<NotebookSummary>("PATCH", `/api/notebooks/${id}`, patch),
   deleteNotebook: (id: string) => request<null>("DELETE", `/api/notebooks/${id}`),
   clearHistory: (id: string) => request<null>("DELETE", `/api/notebooks/${id}/history`),

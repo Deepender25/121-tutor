@@ -4,12 +4,15 @@
 import Link from "next/link";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { clockTime, dayLabel } from "@/lib/format";
+import { clockTime, dayLabel, plain } from "@/lib/format";
 import { statusStore } from "@/lib/status";
 import { useStore } from "@/lib/store";
 import type { Notebook, Source, ToolUI } from "@/lib/types";
-import { Icon, Mark, NOTEBOOK_ICONS, NotebookIcon } from "../Icon";
-import { copyText, modal, useHydrated } from "../overlays";
+import { coverFor, notebookCover } from "@/lib/covers";
+import { Icon, Mark } from "../Icon";
+import { CoverChip } from "../ui/book";
+import { pickCover } from "../ui/cover-picker";
+import { copyText, useHydrated } from "../overlays";
 import { openSettings, StatusPill } from "../Settings";
 import { type Act, createNotebookController, jobStageText, type Msg, type NotebookController, QUICK, type Tab } from "./controller";
 
@@ -58,26 +61,14 @@ function Topbar({ ctl }: { ctl: Ctl }) {
     if (!(await ctl.rename(next))) setName(saved.current);
   };
 
-  const pickIcon = async () => {
-    const choice = await modal<string>((close) => (
-      <>
-        <h2>Choose an icon</h2>
-        <p>Shown on the notebook card and in the header.</p>
-        <div className="icon-grid">
-          {NOTEBOOK_ICONS.map((icon) => (
-            <button key={icon} className={icon === nb.icon ? "on" : ""} onClick={() => close(icon)} aria-label={icon}><NotebookIcon name={icon} /></button>
-          ))}
-        </div>
-      </>
-    ));
-    if (choice) ctl.setIcon(choice);
-  };
-
   return (
     <header className="topbar">
       <Link className="icon-btn" aria-label="All notebooks" data-tip="All notebooks" href="/"><Icon name="back" /></Link>
       <div className="nb-title">
-        <button className="icon-tile btn-tile" aria-label="Change icon" data-tip="Change icon" onClick={pickIcon}><NotebookIcon name={nb.icon} /></button>
+        <button className="nb-cover-btn" aria-label="Cover colour" data-tip="Cover colour"
+          onClick={async () => { const c = await pickCover(nb.name, notebookCover(nb).key); if (c) ctl.setCover(c); }}>
+          <CoverChip cover={notebookCover(nb)} className="nb-cover" />
+        </button>
         <div className="nb-title-text">
           <input className="nb-name" value={name} aria-label="Notebook name" maxLength={120} spellCheck={false}
             onChange={(e) => setName(e.target.value)}
@@ -175,9 +166,9 @@ function SourceItem({ ctl, s, index, active, many }: { ctl: Ctl; s: Source; inde
     <div className={`source${active ? " active" : ""}`} role="button" tabIndex={0}
       title={active ? "This source is being taught" : "Teach this source"}
       onClick={() => ctl.setActive(s.doc_id)} onKeyDown={(e) => { if (e.key === "Enter") ctl.setActive(s.doc_id); }}>
-      <div className="file-tile"><Icon name="file" />{many ? <i>{String(index + 1)}</i> : null}</div>
+      <CoverChip cover={s.missing ? null : coverFor(s.doc_id)} className="file-tile">{many ? <i>{String(index + 1)}</i> : null}</CoverChip>
       <div className="source-text">
-        <div className="title">{s.title}</div>
+        <div className="title">{plain(s.title)}</div>
         <div className="sub" title={s.keyword_only ? "Indexed with the other embedding model. Search matches keywords until it's updated." : undefined}>
           {s.missing ? "Missing — add it again" : `${s.pages} pages${s.keyword_only ? " · updating search" : ""}`}{active ? <span className="badge">Teaching</span> : null}</div>
       </div>
@@ -207,10 +198,10 @@ function OutlineBox({ ctl }: { ctl: Ctl }) {
         <div className="outline">
           {o.sections.length ? o.sections.map((sec) => (
             <button key={sec.id} className={cls("outline-item", `l${Math.min(sec.level, 3)}`, sec.id === current && "current")}
-              title={`Teach “${sec.title}”`} aria-current={sec.id === current ? "location" : undefined}
+              title={`Teach “${plain(sec.title)}”`} aria-current={sec.id === current ? "location" : undefined}
               onClick={() => ctl.teachSection(sec)}>
               <span className="node" aria-hidden="true" />
-              <span className="t">{sec.title}</span>
+              <span className="t">{plain(sec.title)}</span>
               <span className="p">{sec.pages}</span>
             </button>
           )) : <div className="viewer-empty">No sections found.</div>}
@@ -335,11 +326,11 @@ function RefChips({ ui, sources, ctl }: { ui: ToolUI; sources: Source[]; ctl: Ct
     return (
       <>
         {ui.refs.filter((r) => { const k = `${r.doc_id}:${r.page}`; if (seen.has(k)) return false; seen.add(k); return true; })
-          .slice(0, 5).map((r) => chip(`${r.doc_id}:${r.page}`, r.doc_id, r.page, `p. ${r.pages}`, r.snippet, `${r.title} · ${r.section || ""}`))}
+          .slice(0, 5).map((r) => chip(`${r.doc_id}:${r.page}`, r.doc_id, r.page, `p. ${r.pages}`, r.snippet, plain(`${r.title} · ${r.section || ""}`)))}
       </>
     );
   }
-  if (ui.kind === "passage") return chip("p", ui.doc_id, ui.page, `${ui.section} · p. ${ui.pages}`, ui.snippet, title(ui.doc_id));
+  if (ui.kind === "passage") return chip("p", ui.doc_id, ui.page, `${plain(ui.section)} · p. ${ui.pages}`, ui.snippet, plain(title(ui.doc_id)));
   if (ui.kind === "web") {
     return (
       <>
@@ -511,7 +502,7 @@ const ViewerPanel = memo(function ViewerPanel({ ctl }: { ctl: Ctl }) {
       onPointerMove={ctl.viewerPointer} onPointerDown={ctl.viewerPointer}>
       <div className="panel-head viewer-head">
         <span className="doc-ic"><Icon name="file" className="sm" /></span>
-        <div className="doc-name" title={v.title || undefined}>{v.title || "Page viewer"}</div>
+        <div className="doc-name" title={plain(v.title) || undefined}>{plain(v.title) || "Page viewer"}</div>
         <div className="zoom">
           <button className="icon-btn sm" aria-label="Zoom out" onClick={ctl.zoomOut}><Icon name="zoomOut" className="sm" /></button>
           <button className="zoom-label" aria-label="Fit to width" data-tip="Fit width" onClick={ctl.fitWidth}>{`${Math.round(v.zoom * 100)}%`}</button>

@@ -4,6 +4,7 @@
 //
 //   sources + outline | conversation + voice | PDF viewer, with draggable splits between them, and a
 //   full-screen reading mode where the PDF fills the screen and the tutor becomes a floating orb.
+import { plain } from "@/lib/format";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { api } from "@/lib/api";
 import { h, iconEl } from "@/lib/dom";
@@ -465,7 +466,8 @@ export function createNotebookController(initial: Notebook) {
       case "tool_call": {
         finalizeUser();
         const m = ensureModel();
-        const [ic, label] = (TOOL_LABELS[msg.name] || (() => ["sparkles", msg.name] as [string, string]))(msg.args || {});
+        const [ic, rawLabel] = (TOOL_LABELS[msg.name] || (() => ["sparkles", msg.name] as [string, string]))(msg.args || {});
+        const label = plain(rawLabel); // section names come from the PDF and may carry emoji
         const key = `t${msg.id}`;
         patchMsg(m.id, (x) => ({ ...x, acts: [...x.acts, { key, icon: ic, label, running: true, error: null, ui: null }] }));
         m.acts.set(msg.id, key);
@@ -487,7 +489,7 @@ export function createNotebookController(initial: Notebook) {
         }
         if (msg.ui?.kind === "passage") onPassage(msg.ui);
         if (msg.ui?.kind === "search" || msg.ui?.kind === "passage") followMaterial(msg.ui);
-        if (!S.toolsPending.size) patch("stage", { activity: msg.ui?.kind === "passage" ? `${msg.ui.section} · p. ${msg.ui.pages}` : "" });
+        if (!S.toolsPending.size) patch("stage", { activity: msg.ui?.kind === "passage" ? `${plain(msg.ui.section)} · p. ${msg.ui.pages}` : "" });
         paintVoice();
         break;
       }
@@ -554,10 +556,10 @@ export function createNotebookController(initial: Notebook) {
     } catch (e) { toast((e as Error).message, "error"); return false; }
   }
 
-  async function setIcon(icon: string) {
+  async function setCover(cover: string) {
     try {
-      await api.updateNotebook(id, { icon });
-      setNb({ ...nb, icon });
+      await api.updateNotebook(id, { cover });
+      setNb({ ...nb, cover });
     } catch (e) { toast((e as Error).message, "error"); }
   }
 
@@ -1210,7 +1212,7 @@ export function createNotebookController(initial: Notebook) {
     toggleMic: () => live?.toggleMic(),
     endLive: () => live?.end(),
     // sources & outline
-    pickFiles, upload, removeSource, dismissJob, setActive, teachSection, outlineMenu, rename, setIcon,
+    pickFiles, upload, removeSource, dismissJob, setActive, teachSection, outlineMenu, rename, setCover,
     // viewer
     toggleViewer, setTab, openCitation, goToPage, prevPage, nextPage, zoomIn, zoomOut, fitWidth, setFollow,
     resumeFollow: () => resumeFollow(true), viewerPointer,

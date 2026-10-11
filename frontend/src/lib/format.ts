@@ -35,3 +35,11 @@ export function dayLabel(iso: string): string {
     ? "Today"
     : d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" });
 }
+
+// Headings in PDFs often carry emoji ("🧠 Memory Trick"); the interface shows names as plain text. Removes
+// pictographs with their joiners, variation selectors and skin-tone modifiers, then tidies the spaces left behind.
+const EMOJI = /(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[\u{1F3FB}-\u{1F3FF}\u20E3\uFE0F\u200D])+/gu;
+export function plain(text: string | null | undefined): string {
+  return (text || "").replace(EMOJI, " ").replace(/\s{2,}/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
+}
+

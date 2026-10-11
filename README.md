@@ -74,7 +74,10 @@ Run `python app.py --debug` to see everything in the API window too.
 
 ## What's in the app
 
-- **Notebooks** with multiple PDF sources each. Search covers all sources; teaching follows the active
+- **Your library**: notebooks appear as books on a shelf, each in its own cloth colour (a new one gets the colour
+  used least; change it from the book's menu). "Continue reading" opens the book you're in at the page you stopped.
+  Long-press a book on a phone (or right-click) for its menu.
+- **Notebooks** with multiple PDF sources each; every PDF has a colour of its own, shown as a small spine. Search covers all sources; teaching follows the active
   source. Each PDF remembers where you stopped, so "continue" picks up from there.
 - **Voice mode**: live, interruptible conversation (Gemini Live). The text bar works like ChatGPT's: type, or
   tap the orb on its right to talk. While talking, the bar has the mic, a box to keep typing, and **End**; the

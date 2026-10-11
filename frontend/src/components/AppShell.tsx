@@ -4,6 +4,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { startStatusPolling } from "@/lib/status";
+import { installTooltips } from "@/lib/tooltip";
 import { keepScreenOn } from "@/lib/wake-lock";
 import { closeAllOverlays, OverlayHosts } from "./overlays";
 
@@ -15,6 +16,7 @@ export function AppShell() {
   useEffect(() => { if (!location.pathname.startsWith("/login")) startStatusPolling(); }, []);
 
   useEffect(() => keepScreenOn(), []); // phones: the screen stays on while the app is open
+  useEffect(() => installTooltips(), []); // data-tip="…" anywhere
 
   // Dialogs and menus belong to the page they were opened on.
   useEffect(() => { closeAllOverlays(); }, [pathname]);

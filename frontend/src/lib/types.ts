@@ -66,6 +66,7 @@ export interface NotebookSummary {
   name: string;
   emoji: string;
   icon: string;
+  cover: string; // book-cover colour key (lib/covers.ts)
   created_at: string;
   updated_at: string;
   sources: Source[];

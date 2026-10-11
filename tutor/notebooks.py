@@ -18,6 +18,10 @@ ICONS = ["book", "cap", "flask", "brain", "atom", "globe", "landmark", "code", "
          "stethoscope", "palette", "music", "leaf", "rocket", "briefcase", "chart", "languages", "dna",
          "telescope", "pen", "map", "lightbulb", "cpu"]
 DEFAULT_ICON = "book"
+# Book-cover colours (the frontend's lib/covers.ts has the same keys, in the same order). Each notebook keeps one;
+# a new notebook gets the least-used colour, so the books on the shelf stay distinct.
+COVERS = ["oxblood", "navy", "forest", "ochre", "slate", "terracotta", "plum", "teal", "sand", "olive", "rose",
+          "graphite"]
 # Notebooks created before icons existed stored an emoji; map it to the closest icon.
 _EMOJI_TO_ICON = {
     "📘": "book", "📗": "book", "📙": "book", "📕": "book", "📓": "book", "📜": "book", "🧪": "flask", "🔬": "flask",
@@ -42,7 +46,8 @@ class Notebook:
     sources: list[str] = field(default_factory=list)  # doc_ids, in the order added
     active_source: str | None = None  # the source being taught (reading cursor)
     history: list[dict] = field(default_factory=list)  # {role, text, ts, refs?}
-    icon: str = ""
+    icon: str = ""  # legacy: notebooks are shown as books now (cover below)
+    cover: str = ""  # one of COVERS
 
     def __post_init__(self):
         if self.icon not in ICONS:
@@ -72,11 +77,27 @@ class NotebookStore:
         tmp.write_text(json.dumps(asdict(nb), indent=1, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
 
+    def _load(self, path: Path) -> Notebook:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return Notebook(**{k: v for k, v in data.items() if k in Notebook.__dataclass_fields__})
+
+    def _least_used_cover(self, notebooks: list[Notebook]) -> str:
+        used = [nb.cover for nb in notebooks if nb.cover in COVERS]
+        return min(COVERS, key=lambda c: (used.count(c), COVERS.index(c)))
+
+    def _assign_covers(self, notebooks: list[Notebook]) -> None:
+        """Notebooks from before covers existed get one, oldest first, and keep it from then on."""
+        for nb in sorted(notebooks, key=lambda n: n.created_at):
+            if nb.cover not in COVERS:
+                nb.cover = self._least_used_cover(notebooks)
+                self._write(nb)
+
     def all(self) -> list[Notebook]:
         with self._lock:
             if not self.folder.exists():
                 return []
-            notebooks = [self.get(p.stem) for p in self.folder.glob("*.json")]
+            notebooks = [self._load(p) for p in self.folder.glob("*.json")]
+            self._assign_covers(notebooks)
             return sorted(notebooks, key=lambda n: n.updated_at, reverse=True)
 
     def get(self, notebook_id: str) -> Notebook:
@@ -84,13 +105,17 @@ class NotebookStore:
             path = self._path(notebook_id)
             if not path.exists():
                 raise KeyError(notebook_id)
-            return Notebook(**json.loads(path.read_text(encoding="utf-8")))
+            nb = self._load(path)
+            if nb.cover not in COVERS:
+                self.all()  # assigns every missing cover consistently
+                nb = self._load(path)
+            return nb
 
     def create(self, name: str, icon: str | None = None) -> Notebook:
         with self._lock:
             now = _now()
             nb = Notebook(secrets.token_hex(6), name.strip() or "Untitled notebook", "", now, now,
-                          icon=icon if icon in ICONS else random.choice(ICONS))
+                          icon=icon if icon in ICONS else random.choice(ICONS), cover=self._least_used_cover(self.all()))
             self._write(nb)
             return nb
 
@@ -102,6 +127,8 @@ class NotebookStore:
                     setattr(nb, key, changes[key])
             if changes.get("icon") in ICONS:
                 nb.icon = changes["icon"]
+            if changes.get("cover") in COVERS:
+                nb.cover = changes["cover"]
             nb.name = nb.name.strip()[:120] or "Untitled notebook"
             nb.updated_at = _now()
             self._write(nb)

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tutor import config
+from tutor.notebooks import COVERS as NOTEBOOK_COVERS
 
 SAMPLE = Path(__file__).parent / "fixtures" / "sample_toc.pdf"
 
@@ -105,6 +106,10 @@ def test_rename_and_icon(client, notebook):
     assert r["name"] == "Rainwater" and r["icon"] == "leaf"
     assert client.patch(f"/api/notebooks/{notebook['id']}", json={"icon": "🌧️"}).status_code == 400
     assert client.patch(f"/api/notebooks/{notebook['id']}", json={"active_source": "nope"}).status_code == 400
+    # book cover colour: one of the palette, changeable, anything else refused
+    assert client.get(f"/api/notebooks/{notebook['id']}").json()["cover"] in NOTEBOOK_COVERS
+    assert client.patch(f"/api/notebooks/{notebook['id']}", json={"cover": "teal"}).json()["cover"] == "teal"
+    assert client.patch(f"/api/notebooks/{notebook['id']}", json={"cover": "neon"}).status_code == 400
 
 
 def test_tools_and_prompt(client, notebook):

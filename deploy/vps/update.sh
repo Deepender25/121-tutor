@@ -27,7 +27,7 @@ install -m 755 deploy/vps/voice-tutor /usr/local/bin/voice-tutor
 systemctl daemon-reload
 systemctl restart voice-tutor-api
 for i in $(seq 1 30); do
-  if curl -fsS --max-time 2 http://127.0.0.1:8766/api/health >/dev/null; then
+  if curl -fsS --max-time 2 http://127.0.0.1:8766/api/health >/dev/null 2>&1; then
     echo "Updated to $after and healthy."
     exit 0
   fi

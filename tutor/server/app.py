@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from tutor import config, web
 from tutor.library import DocumentError, delete_document, doc_id_for, ingest, read_meta
+from tutor.notebooks import COVERS as NOTEBOOK_COVERS
 from tutor.notebooks import ICONS as NOTEBOOK_ICONS
 from tutor.server import auth_routes, pages
 from tutor.server.jobs import JobQueue, is_pdf
@@ -197,6 +198,7 @@ class NotebookIn(BaseModel):
 class NotebookPatch(BaseModel):
     name: str | None = None
     icon: str | None = None
+    cover: str | None = None
     active_source: str | None = None
 
 
@@ -222,7 +224,10 @@ def patch_notebook(notebook_id: str, body: NotebookPatch):
         raise HTTPException(400, "That source isn't in this notebook")
     if body.icon is not None and body.icon not in NOTEBOOK_ICONS:
         raise HTTPException(400, "Unknown icon")
-    nb = state.notebooks.update(notebook_id, name=body.name, icon=body.icon, active_source=body.active_source)
+    if body.cover is not None and body.cover not in NOTEBOOK_COVERS:
+        raise HTTPException(400, "Unknown cover colour")
+    nb = state.notebooks.update(notebook_id, name=body.name, icon=body.icon, cover=body.cover,
+                                active_source=body.active_source)
     return _notebook_payload(nb)
 
 
