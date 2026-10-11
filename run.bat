@@ -135,8 +135,8 @@ if "%API_UP%"=="0" (
 rem If only the API was missing (the UI was already up), open the app once the API is ready.
 if "%UI_UP%"=="0" (
     echo [5/5] Starting the interface in its own window: "Voice Tutor - UI"  ^(logs\ui.log^)
-    echo       The browser opens automatically when both are ready ^(the first start also
-    echo       downloads the ~1.5 GB embedding model once^).
+    echo       The browser opens automatically when both are ready ^(with EMBEDDING_MODEL=offline,
+    echo       the first start also downloads the ~1.5 GB embedding model once^).
     start "Voice Tutor - UI" /D "%ROOT%" cmd /k call "%PY%" ui.py serve %*
     >>"%SETUPLOG%" echo Started UI window
 ) else (

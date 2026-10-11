@@ -12,7 +12,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from tutor import config  # noqa: E402
 from tutor.library import DocumentError, ingest, open_document  # noqa: E402
-from tutor.retrieval.embedder import Embedder  # noqa: E402
+from tutor.retrieval.embedder import create_embedder  # noqa: E402
 
 
 def main() -> int:
@@ -26,7 +26,7 @@ def main() -> int:
         return 1
 
     started = time.perf_counter()
-    embedder = Embedder()
+    embedder = create_embedder()
     try:
         result = ingest(args.pdf, embedder, force=args.force)
     except DocumentError as e:

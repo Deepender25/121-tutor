@@ -179,7 +179,10 @@ def _worker_main(conn, model_name: str, dim: int, safe: bool) -> None:
 # ---------------------------------------------------------------- the client used by the server
 
 class EmbedderClient:
-    def __init__(self, model_name: str = config.EMBEDDING_MODEL, dim: int = config.EMBEDDING_DIM):
+    mode = "offline"
+    label = "Offline · EmbeddingGemma, on this computer"
+
+    def __init__(self, model_name: str = config.OFFLINE_EMBEDDING_MODEL, dim: int = config.EMBEDDING_DIM):
         self.model_name = model_name
         self.dim = dim
         self.safe = False

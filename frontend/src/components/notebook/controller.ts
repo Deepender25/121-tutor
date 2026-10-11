@@ -70,6 +70,10 @@ export const QUICK: [string, string, string, string][] = [
 
 export function jobStageText(j: Job): string {
   if (j.stage === "queued") return "Waiting…";
+  if (j.kind === "reindex") {
+    // switched embedding model: the stored text gets new vectors; keyword search works meanwhile
+    return j.stage === "embedding" ? `Updating search · ${j.done} of ${j.total}` : j.stage === "saving" ? "Saving…" : "Updating search…";
+  }
   if (j.stage === "parsing") return "Reading the PDF…";
   if (j.stage === "chunking") return "Finding sections…";
   if (j.stage === "embedding") return `Indexing ${j.done} of ${j.total}`;
@@ -659,6 +663,7 @@ export function createNotebookController(initial: Notebook) {
     try {
       const fresh = await api.notebook(id);
       setNb({ ...nb, sources: fresh.sources, active_source: fresh.active_source });
+      mergeJobs(fresh.jobs || []);
     } catch { /* transient */ }
   }
 
@@ -687,6 +692,15 @@ export function createNotebookController(initial: Notebook) {
     } catch (e) { toast((e as Error).message, "error", 6000); }
   }
 
+  // Jobs the server started on its own (re-indexing after an embedding-model switch) show up here too.
+  function mergeJobs(jobs: Job[]) {
+    const known = new Set(get().jobs.map((j) => j.id));
+    const fresh = jobs.filter((j) => !known.has(j.id) && (j.status === "queued" || j.status === "running"));
+    if (!fresh.length) return;
+    store.set((s) => ({ jobs: [...s.jobs, ...fresh] }));
+    pollJobs();
+  }
+
   let polling = false;
   async function pollJobs() {
     if (polling || S.disposed) return;
@@ -701,8 +715,13 @@ export function createNotebookController(initial: Notebook) {
             if (fresh.status === "done") {
               store.set((s) => ({ jobs: s.jobs.filter((x) => x.id !== j.id) }));
               api.dismissJob(j.id).catch(() => {});
-              toast(`Added “${fresh.title || fresh.file_name}”`, "success");
-              await reload();
+              if (fresh.kind === "reindex") {
+                toast(`Search is fully ready for “${fresh.title || fresh.file_name}”`, "success");
+                await reloadSources();
+              } else {
+                toast(`Added “${fresh.title || fresh.file_name}”`, "success");
+                await reload();
+              }
             } else {
               store.set((s) => ({ jobs: s.jobs.map((x) => (x.id === j.id ? fresh : x)) }));
             }
@@ -1067,6 +1086,7 @@ export function createNotebookController(initial: Notebook) {
   function mount() {
     S.disposed = false;
     loadSplit();
+    pollJobs(); // jobs already running when the page opened
     try { S.view = localStorage.getItem("vt-voice-view") === "orb" ? "orb" : "transcript"; } catch { /* storage blocked */ }
     store.set({ view: S.view });
 

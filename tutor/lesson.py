@@ -14,15 +14,13 @@ Marking a section incomplete clears its chunks (read or marked), so it really sh
 
 import json
 import logging
-import os
 import re
-import tempfile
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tutor import fileio
 from tutor.document import Chunk, Section
 
 log = logging.getLogger("lesson")
@@ -62,28 +60,7 @@ class Progress:
             "updated_at": self.updated_at,
         }
         with _save_lock:
-            # Write a temp file, then swap it in, so a crash mid-write never leaves a half-written file.
-            fd, tmp = tempfile.mkstemp(prefix="progress-", suffix=".tmp", dir=path.parent)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=1)
-                _replace(tmp, path)
-            except BaseException:
-                Path(tmp).unlink(missing_ok=True)
-                raise
-
-
-def _replace(src: str, dst: Path, attempts: int = 8) -> None:
-    """os.replace, retried briefly on Windows: antivirus scanners and the search indexer open freshly written
-    files for a moment, and replacing a file that's open elsewhere fails with WinError 32 / 5."""
-    for attempt in range(attempts):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if attempt == attempts - 1:
-                raise
-            time.sleep(0.05 * (attempt + 1))  # 50 ms, 100 ms, ... about 1.4 s in all
+            fileio.write_json(path, data)
 
 
 def _pages(start: int, end: int) -> str:

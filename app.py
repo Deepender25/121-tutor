@@ -63,6 +63,9 @@ def banner() -> None:
         ("Logs", str(MAIN_LOG)),
         ("Gemini key", key),
         ("Voice model", config.LIVE_MODEL),
+        ("Embeddings", config.EMBEDDING_MODE_ERROR or (
+            f"online · {config.EMBEDDING_MODEL} (Gemini API)" if config.EMBEDDING_MODE == "online"
+            else f"offline · {config.EMBEDDING_MODEL} (this computer)")),
         ("Web search", "Tavily" if web.provider() == "tavily" else "DuckDuckGo"),
     ]
     width = max(len(k) for k, _ in rows)
@@ -102,8 +105,13 @@ def main() -> int:
     banner()
     if not in_venv():
         log.warning("Not running inside a virtual environment (%s). Start the app with run.bat.", sys.executable)
+    if config.EMBEDDING_MODE_ERROR:
+        log.error(config.EMBEDDING_MODE_ERROR)
     if not os.environ.get("GEMINI_API_KEY", "").strip():
-        log.warning("GEMINI_API_KEY is not set in .env: everything works except voice.")
+        if config.EMBEDDING_MODE == "online":
+            log.error("EMBEDDING_MODEL=online needs GEMINI_API_KEY in .env (or set EMBEDDING_MODEL=offline).")
+        else:
+            log.warning("GEMINI_API_KEY is not set in .env: everything works except voice.")
 
     import uvicorn
 

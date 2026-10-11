@@ -1,6 +1,14 @@
 """Ingest a PDF into its own folder under DATA_ROOT, and open an ingested document for a session.
 
 Folder per document (docs/<doc_id>/): lancedb/ · sections.json · meta.json · progress.json
+
+Embedding spaces. EmbeddingGemma (offline) and Gemini Embedding 2 (online) produce vectors that can't be compared
+with each other, so a document keeps one vector index (LanceDB table) per space: same chunks, same order, vectors
+from one model each. meta["vector_indexes"] records which spaces exist. A search embeds the question with the
+current embedder and only ever searches that embedder's table. When the mode changes, a document missing the
+current space gets it added from its stored chunks (add_embeddings: no re-parsing, progress and order unchanged);
+until then it can still be searched by keywords. Documents indexed before spaces existed have a single "chunks"
+table and their model in meta["embedding_model"]; they read as an index in that space, with nothing to migrate.
 """
 
 import hashlib
@@ -13,12 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from tutor import config
+from tutor import config, fileio
 from tutor.document import Section, strip_tags
 from tutor.ingest.chunk import chunk_document
 from tutor.ingest.parse import parse_pdf
 from tutor.lesson import Lesson
-from tutor.retrieval.store import ChunkStore
+from tutor.retrieval.store import TABLE, ChunkStore
 
 CURRENT_FILE = config.DATA_ROOT / "current.txt"
 
@@ -39,14 +47,55 @@ def doc_id_for(pdf: Path) -> str:
     return hashlib.sha256(pdf.read_bytes()).hexdigest()[:12]
 
 
-def _expected_index_meta(embedder) -> dict:
-    return {
-        "embedding_model": embedder.model_name,
-        "embedding_dim": embedder.dim,
-        "embedding_prompt_version": config.EMBEDDING_PROMPT_VERSION,
-        "chunker_version": config.CHUNKER_VERSION,
-        "index_version": config.INDEX_VERSION,
-    }
+def _expected_doc_meta() -> dict:
+    """Settings that shape the chunks themselves: when these change the document is parsed again."""
+    return {"chunker_version": config.CHUNKER_VERSION, "index_version": config.INDEX_VERSION}
+
+
+def _doc_current(meta: dict) -> bool:
+    return all(meta.get(k) == v for k, v in _expected_doc_meta().items())
+
+
+# ---- embedding spaces
+
+def embedding_space(embedder) -> dict:
+    return {"model": embedder.model_name, "dim": embedder.dim, "prompt_version": config.EMBEDDING_PROMPT_VERSION}
+
+
+def space_key(space: dict) -> str:
+    return f"{space['model']}@{space['dim']}/p{space['prompt_version']}"
+
+
+def _table_for(space: dict) -> str:
+    name = f"{space['model']}_{space['dim']}_p{space['prompt_version']}".lower()
+    return "vectors_" + re.sub(r"[^a-z0-9]+", "_", name).strip("_")
+
+
+def vector_indexes(meta: dict) -> dict[str, dict]:
+    """{space key: {model, dim, prompt_version, table, embedded_at}} for a document's metadata."""
+    if "vector_indexes" in meta:
+        return dict(meta["vector_indexes"])
+    if meta.get("embedding_model"):  # indexed before spaces existed: one table, "chunks"
+        space = {"model": meta["embedding_model"], "dim": meta.get("embedding_dim", config.EMBEDDING_DIM),
+                 "prompt_version": meta.get("embedding_prompt_version", 1)}
+        return {space_key(space): {**space, "table": TABLE, "embedded_at": meta.get("ingested_at")}}
+    return {}
+
+
+def has_space(meta: dict, embedder) -> bool:
+    return space_key(embedding_space(embedder)) in vector_indexes(meta)
+
+
+_LEGACY_KEYS = ("embedding_model", "embedding_dim", "embedding_prompt_version")
+
+
+def _write_meta(doc_id: str, meta: dict) -> None:
+    fileio.write_json(config.doc_dir(doc_id) / "meta.json", meta)
+
+
+def _read_raw_meta(doc_id: str) -> dict | None:
+    path = config.doc_dir(doc_id) / "meta.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
 @dataclass
@@ -58,6 +107,7 @@ class IngestResult:
     chunks: int
     structure_source: str
     skipped: bool = False
+    reembedded: bool = False  # already indexed in another embedding space: only vectors were added
 
 
 ProgressFn = Callable[[str, int, int], None]  # (stage, done, total)
@@ -96,21 +146,21 @@ def ingest(
     display_name: str | None = None,
     remember_current: bool = True,
 ) -> IngestResult:
-    """Index a PDF. No-op if already indexed with the current settings (re-indexes if settings changed)."""
+    """Index a PDF. No-op if already indexed with the current settings; adds the current embedding space to a
+    document indexed in another one; parses it again if the chunking settings changed."""
     pdf = pdf.resolve()
     doc_id = doc_id_for(pdf)
     folder = config.doc_dir(doc_id)
-    meta_path = folder / "meta.json"
     report = progress or (lambda stage, done, total: None)
 
     meta = read_meta(doc_id)
     if meta and not force:
-        current = all(meta.get(k) == v for k, v in _expected_index_meta(embedder).items())
-        if current:
+        if _doc_current(meta) and vector_indexes(meta):
+            reembedded = add_embeddings(doc_id, embedder, log=log, progress=progress)
             if remember_current:
                 CURRENT_FILE.write_text(doc_id, encoding="utf-8")
             return IngestResult(doc_id, meta["title"], meta["pages"], meta["sections"], meta["chunks"],
-                                meta["structure_source"], skipped=True)
+                                meta["structure_source"], skipped=not reembedded, reembedded=reembedded)
         log("Index settings changed since this file was indexed; re-indexing.")
 
     report("parsing", 0, 1)
@@ -138,8 +188,11 @@ def ingest(
     if folder.exists():
         shutil.rmtree(folder)  # orders change on re-ingest, so old progress is invalid too
     folder.mkdir(parents=True)
-    ChunkStore(folder / "lancedb").write(doc_id, chunks, vectors)
+    space = embedding_space(embedder)
+    table = _table_for(space)
+    ChunkStore(folder / "lancedb", table).write(doc_id, chunks, vectors)
 
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     sections_json = [{k: v for k, v in asdict(s).items() if k != "paragraphs"} for s in parsed.sections]
     (folder / "sections.json").write_text(json.dumps(sections_json, indent=1, ensure_ascii=False), encoding="utf-8")
     meta = {
@@ -151,15 +204,63 @@ def ingest(
         "sections": len(parsed.sections),
         "chunks": len(chunks),
         "structure_source": parsed.structure_source,
-        "ingested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        **_expected_index_meta(embedder),
+        "ingested_at": now,
+        **_expected_doc_meta(),
+        "vector_indexes": {space_key(space): {**space, "table": table, "embedded_at": now}},
     }
-    meta_path.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
+    _write_meta(doc_id, meta)
     if remember_current:
         CURRENT_FILE.write_text(doc_id, encoding="utf-8")
     report("done", 1, 1)
     return IngestResult(doc_id, title, parsed.page_count, len(parsed.sections), len(chunks),
                         parsed.structure_source)
+
+
+def add_embeddings(doc_id: str, embedder, log=print, progress: ProgressFn | None = None) -> bool:
+    """Give a document vectors in the embedder's space, from its stored chunks. False if it already has them."""
+    report = progress or (lambda stage, done, total: None)
+    meta = _read_raw_meta(doc_id)
+    if meta is None:
+        raise DocumentError(f"Document {doc_id} isn't ingested.")
+    indexes = vector_indexes(meta)
+    space = embedding_space(embedder)
+    key = space_key(space)
+    if key in indexes:
+        return False
+    if not indexes:
+        raise DocumentError(f"Document {doc_id} has no stored chunks to embed.")
+    folder = config.doc_dir(doc_id)
+    chunks = ChunkStore(folder / "lancedb", next(iter(indexes.values()))["table"]).load_chunks()
+    log(f"Adding {embedder.model_name} embeddings to {pretty_title(meta.get('title', doc_id))} ({len(chunks)} chunks) ...")
+    report("embedding", 0, len(chunks))
+    vectors = embedder.embed_documents(
+        [(c.heading_path, c.text) for c in chunks],
+        show_progress=progress is None,
+        on_progress=(lambda done, total: report("embedding", done, total)) if progress else None,
+    )
+    report("saving", 0, 1)
+    table = _table_for(space)
+    ChunkStore(folder / "lancedb", table).write(doc_id, chunks, vectors)
+    indexes[key] = {**space, "table": table, "embedded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    meta = {k: v for k, v in (_read_raw_meta(doc_id) or meta).items() if k not in _LEGACY_KEYS}
+    meta["vector_indexes"] = indexes
+    _write_meta(doc_id, meta)
+    report("done", 1, 1)
+    return True
+
+
+def missing_embeddings(embedder) -> list[str]:
+    """Documents that are indexed and current, but not yet in the embedder's space (e.g. after switching mode)."""
+    docs = config.DATA_ROOT / "docs"
+    out = []
+    for meta_path in sorted(docs.glob("*/meta.json")) if docs.exists() else []:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if _doc_current(meta) and vector_indexes(meta) and not has_space(meta, embedder):
+            out.append(meta_path.parent.name)
+    return out
 
 
 def delete_document(doc_id: str) -> None:
@@ -187,8 +288,13 @@ def resolve_doc_id(ref: str | None) -> str:
 class OpenDocument:
     doc_id: str
     meta: dict
-    store: ChunkStore
+    store: ChunkStore | None  # vectors in the current embedder's space; None until add_embeddings has run
     lesson: Lesson
+    text_store: ChunkStore  # chunk text + keyword index (any space's table: the chunks are identical)
+
+    @property
+    def needs_embedding(self) -> bool:
+        return self.store is None
 
 
 def open_document(ref: str | None, embedder) -> OpenDocument:
@@ -200,21 +306,23 @@ def open_document(ref: str | None, embedder) -> OpenDocument:
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     meta["title"] = pretty_title(meta.get("title", ""))
 
-    expected = _expected_index_meta(embedder)
+    expected = _expected_doc_meta()
     stale = {k: (meta.get(k), v) for k, v in expected.items() if meta.get(k) != v}
-    if stale:
-        details = ", ".join(f"{k}: index={old} now={new}" for k, (old, new) in stale.items())
+    indexes = vector_indexes(meta)
+    if stale or not indexes:
+        details = ", ".join(f"{k}: index={old} now={new}" for k, (old, new) in stale.items()) or "no vector index"
         raise StaleIndexError(
             f"Index was built with different settings ({details}). Re-run ingest with --force.",
             Path(meta["source_file"]),
         )
+    entry = indexes.get(space_key(embedding_space(embedder)))
+    text_store = ChunkStore(folder / "lancedb", (entry or next(iter(indexes.values())))["table"])
 
     sections = [Section(**s) for s in json.loads((folder / "sections.json").read_text(encoding="utf-8"))]
     for s in sections:  # indexes built before tag stripping may contain e.g. "<mark>"
         s.title, s.heading_path = strip_tags(s.title), strip_tags(s.heading_path)
-    store = ChunkStore(folder / "lancedb")
-    lesson = Lesson(meta["title"], sections, store.load_chunks(), folder / "progress.json")
-    return OpenDocument(doc_id, meta, store, lesson)
+    lesson = Lesson(meta["title"], sections, text_store.load_chunks(), folder / "progress.json")
+    return OpenDocument(doc_id, meta, text_store if entry else None, lesson, text_store)
 
 
 class DocumentCache:

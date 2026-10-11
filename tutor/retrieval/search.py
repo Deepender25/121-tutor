@@ -3,6 +3,10 @@
 Per-table hybrid scores are rank-based, so merging them would make every source's best chunk look
 equally relevant. Instead we pool vector hits from all tables (cosine distances are comparable: same
 embedding model) and full-text hits (BM25), rank each list globally, then fuse once.
+
+Vector hits only ever come from tables in the query vector's embedding space (the caller passes those as
+vector_stores); a document without one yet (being re-embedded after a mode switch), or a query that couldn't be
+embedded (query_vector=None), still gets full-text hits.
 """
 
 import re
@@ -27,17 +31,21 @@ def _row(doc_id: str, r: dict) -> dict:
     }
 
 
-def hybrid_search(stores: dict, query: str, query_vector: np.ndarray, top_k: int = 5) -> list[dict]:
-    """stores: {doc_id: ChunkStore}. Returns top_k chunks (each with doc_id and a fused `score`)."""
+def hybrid_search(stores: dict, query: str, query_vector: np.ndarray | None, top_k: int = 5,
+                  vector_stores: dict | None = None) -> list[dict]:
+    """stores: {doc_id: ChunkStore} for full-text search; vector_stores: the ones in query_vector's embedding space
+    (default: all of `stores`). Returns top_k chunks (each with doc_id and a fused `score`)."""
     pool = max(top_k * 4, 20)
     text = _FTS_UNSAFE.sub(" ", query).strip()
     vector_hits: list[tuple[float, dict]] = []
     text_hits: list[tuple[float, dict]] = []
-    vec = query_vector.tolist()
+    if query_vector is not None:
+        vec = query_vector.tolist()
+        for doc_id, store in (stores if vector_stores is None else vector_stores).items():
+            for r in store.table.search(vec, query_type="vector").limit(pool).to_list():
+                vector_hits.append((r["_distance"], _row(doc_id, r)))
     for doc_id, store in stores.items():
         table = store.table
-        for r in table.search(vec, query_type="vector").limit(pool).to_list():
-            vector_hits.append((r["_distance"], _row(doc_id, r)))
         if text:
             try:
                 for r in table.search(text, query_type="fts").limit(pool).to_list():

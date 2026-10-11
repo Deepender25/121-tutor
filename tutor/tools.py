@@ -5,6 +5,7 @@ Provider-neutral: JSON-schema declarations + dict-in/dict-out handlers. Each cal
 what went wrong instead of the session failing.
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Callable
@@ -13,6 +14,8 @@ from tutor.lesson import LessonError
 from tutor.library import DocumentCache, DocumentError
 from tutor.retrieval.search import hybrid_search
 from tutor.web import web_search
+
+log = logging.getLogger("tools")
 
 SOURCE_PARAM = {
     "type": "string",
@@ -214,10 +217,26 @@ class NotebookTools:
         doc_ids = [self.resolve_source(source)] if source else self.doc_ids
         if not doc_ids:
             raise LessonError("This notebook has no sources yet.")
-        stores = {d: self.cache.get(d).store for d in doc_ids}
-        hits = hybrid_search(stores, query, self.embedder.embed_query(query), top_k)
+        docs = {d: self.cache.get(d) for d in doc_ids}
+        # Vectors only from tables in the current embedder's space; documents still being re-embedded after a mode
+        # switch, or a question that can't be embedded right now, fall back to keyword matching.
+        vector_stores = {d: doc.store for d, doc in docs.items() if doc.store is not None}
+        notes = []
+        query_vector = None
+        if vector_stores:
+            try:
+                query_vector = self.embedder.embed_query(query)
+            except Exception as e:
+                log.warning("Couldn't embed the search query (%s); using keyword search only", e)
+                notes.append(f"Meaning-based search is unavailable right now ({e}); these are keyword matches only.")
+        pending = [self._title(d) for d, doc in docs.items() if doc.store is None]
+        if pending:
+            notes.append(f"Still being indexed for the current embedding model, so keyword matches only: {'; '.join(pending)}.")
+        hits = hybrid_search({d: doc.text_store for d, doc in docs.items()}, query, query_vector, top_k,
+                             vector_stores=vector_stores)
+        note = {"note": " ".join(notes)} if notes else {}
         if not hits:
-            return ToolOutcome({"results": [], "note": "Nothing in the sources matched."},
+            return ToolOutcome({"results": [], "note": " ".join(["Nothing in the sources matched.", *notes])},
                                {"kind": "search", "query": query, "refs": []})
         results, refs = [], []
         for h in hits:
@@ -228,7 +247,7 @@ class NotebookTools:
             refs.append({"doc_id": h["doc_id"], "title": title, "page": h["page_start"], "pages": pages,
                          "section": h["heading_path"], "snippet": " ".join(h["text"].split())[:240],
                          "text": h["text"]})
-        return ToolOutcome({"results": results}, {"kind": "search", "query": query, "refs": refs})
+        return ToolOutcome({"results": results, **note}, {"kind": "search", "query": query, "refs": refs})
 
     def update_progress(self, target: str, completed: bool = True, through: bool = False,
                         source: str | None = None) -> ToolOutcome:

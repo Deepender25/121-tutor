@@ -1,4 +1,8 @@
-"""LanceDB chunk table: vectors + native full-text index. Search logic lives in search.py."""
+"""LanceDB chunk tables: vectors + native full-text index. Search logic lives in search.py.
+
+A document's folder holds one table per embedding space (library.py decides which): the same chunks, in the same
+order, with vectors from one embedding model each. Vectors from different models are never in one table.
+"""
 
 from pathlib import Path
 
@@ -9,7 +13,7 @@ from lancedb.index import FTS
 
 from tutor.document import Chunk, strip_tags
 
-TABLE = "chunks"
+TABLE = "chunks"  # the table of documents indexed before embedding spaces existed (EmbeddingGemma)
 
 
 def _schema(dim: int) -> pa.Schema:
@@ -27,17 +31,31 @@ def _schema(dim: int) -> pa.Schema:
     ])
 
 
+def table_names(db) -> list[str]:
+    names, token = [], None
+    while True:
+        page = db.list_tables(page_token=token)
+        names += page.tables
+        token = page.page_token
+        if not token:
+            return names
+
+
 class ChunkStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, table: str = TABLE):
         path.mkdir(parents=True, exist_ok=True)
         self.db = lancedb.connect(str(path))
+        self.table_name = table
         self._table = None
 
     @property
     def table(self):
         if self._table is None:
-            self._table = self.db.open_table(TABLE)
+            self._table = self.db.open_table(self.table_name)
         return self._table
+
+    def exists(self) -> bool:
+        return self.table_name in table_names(self.db)
 
     def write(self, doc_id: str, chunks: list[Chunk], vectors: np.ndarray) -> None:
         rows = [
@@ -55,7 +73,7 @@ class ChunkStore:
             }
             for c, v in zip(chunks, vectors, strict=True)
         ]
-        self._table = self.db.create_table(TABLE, data=rows, schema=_schema(vectors.shape[1]), mode="overwrite")
+        self._table = self.db.create_table(self.table_name, data=rows, schema=_schema(vectors.shape[1]), mode="overwrite")
         self._table.create_index(
             "search_text",  # unified API: column first
             config=FTS(language="English", stem=True, remove_stop_words=True, ascii_folding=True),

@@ -7,6 +7,8 @@ torch>=2.14
 torchvision>=0.29           # required by EmbeddingGemma 2's processor, even for text-only use
 sentence-transformers>=6.1  # EmbeddingGemma 2 requirement
 transformers>=5.19
+tokenizers                  # chunking in both modes; online mode loads only EmbeddingGemma's tokenizer.json
+huggingface_hub
 pillow
 
 # Retrieval + PDF parsing

@@ -15,10 +15,32 @@ DATA_ROOT = Path(
     or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "voice-tutor"
 )
 
-# Embeddings. Changing the model means re-ingesting: one table never mixes embedding models.
-EMBEDDING_MODEL = os.environ.get("VOICE_TUTOR_EMBEDDING_MODEL", "google/embeddinggemma-2")
-EMBEDDING_DIM = 768
-EMBEDDING_PROMPT_VERSION = 1
+# Embeddings: EMBEDDING_MODEL=offline (default) runs EmbeddingGemma on this computer; EMBEDDING_MODEL=online uses
+# Gemini Embedding 2 through GEMINI_API_KEY, for devices that can't run the local model. The two produce different
+# vector spaces, so every document keeps one vector index per embedding space and a search only ever compares
+# vectors from the same space (see library.py). Switching re-embeds the stored chunks in the background.
+EMBEDDING_MODES = ("offline", "online")
+
+
+def parse_embedding_mode(value: str | None) -> tuple[str, str | None]:
+    """(mode, error). Unset or empty means offline; anything that isn't offline/online is an error."""
+    mode = (value or "").strip().lower() or "offline"
+    if mode not in EMBEDDING_MODES:
+        return "offline", f"EMBEDDING_MODEL must be 'offline' or 'online' (it is '{value}'). Fix it in .env."
+    return mode, None
+
+
+EMBEDDING_MODE, EMBEDDING_MODE_ERROR = parse_embedding_mode(os.environ.get("EMBEDDING_MODEL"))
+OFFLINE_EMBEDDING_MODEL = os.environ.get("VOICE_TUTOR_EMBEDDING_MODEL", "google/embeddinggemma-2")
+ONLINE_EMBEDDING_MODEL = os.environ.get("VOICE_TUTOR_ONLINE_EMBEDDING_MODEL", "gemini-embedding-2")
+EMBEDDING_MODEL = ONLINE_EMBEDDING_MODEL if EMBEDDING_MODE == "online" else OFFLINE_EMBEDDING_MODEL
+EMBEDDING_DIM = 768  # both models: EmbeddingGemma natively, Gemini Embedding 2 via output_dimensionality
+EMBEDDING_PROMPT_VERSION = 1  # same "title: … | text: …" / "task: search result | query: …" format for both
+# Chunk sizes are measured with EmbeddingGemma's tokenizer in both modes (Gemma shares Gemini's tokenizer), so a
+# document chunks the same way whichever mode indexed it. Online mode loads only the tokenizer file, never the model.
+TOKENIZER_MODEL = OFFLINE_EMBEDDING_MODEL
+# Online: requests per minute to stay under (the free tier allows 100 texts a minute; raise it on a paid tier).
+ONLINE_EMBED_PER_MINUTE = max(10, int(os.environ.get("VOICE_TUTOR_ONLINE_EMBED_PER_MINUTE", "100")))
 
 # Chunking (tokens, measured with the embedding model's tokenizer).
 CHUNK_TARGET_TOKENS = 550

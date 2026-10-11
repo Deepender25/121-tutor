@@ -23,6 +23,22 @@ Needs **Python 3.10+** (3.13 recommended) and **Node.js 20.9+** (the LTS from ht
    restart.
 3. Create a notebook, drop in PDFs, tap the orb and talk. Or type.
 
+### Offline or online embeddings
+
+PDFs are indexed for search with an embedding model. Choose where it runs with `EMBEDDING_MODEL` in `.env`:
+
+| `EMBEDDING_MODEL=` | Model | Use it when |
+|---|---|---|
+| `offline` (default) | EmbeddingGemma, on this computer | The computer can run it (downloads ~1.5 GB once; search works without internet) |
+| `online` | Gemini Embedding 2, with your `GEMINI_API_KEY` | The computer can't run the local model (older or low-memory machines). Nothing large is downloaded |
+
+Restart the app after changing it; Settings shows which one is active. The two models' results can't be mixed, so
+each source keeps a separate index per model. Sources indexed with the other one are updated automatically in the
+background ("Updating search" in Sources), from the text already stored: no re-reading of the PDF, and your progress
+stays. Until a source is updated, searching it still works by keywords. Switching back later is instant, since both
+indexes are kept. On the free tier, online indexing runs at about 100 chunks a minute (a 50-page PDF takes about 2
+minutes); the app paces itself and waits when Google asks it to.
+
 To stop the app, close both windows (or press Ctrl+C in them). Drag a PDF onto `run.bat` to open it
 straight in a new notebook. Use Chrome or Edge for the microphone.
 
@@ -42,7 +58,8 @@ and new tabs all work.
 | `logs\setup.log` | run.bat steps, pip and npm output, UI builds |
 
 If indexing a PDF fails on a computer, the source shows the reason (for example an older processor or
-too little free memory) and the app keeps running. The embedding model runs in its own process: when it
+too little free memory) and the app keeps running. If the local model can't run on that computer at all, set
+`EMBEDDING_MODEL=online` in `.env` (see above). The embedding model runs in its own process: when it
 crashes, the app restarts it in a slower safe mode and carries on. Send `logs\embedder-crash.log` and
 `logs\voice-tutor.log` if you need help.
 

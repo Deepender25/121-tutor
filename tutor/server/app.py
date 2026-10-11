@@ -101,9 +101,12 @@ def _source_info(doc_id: str) -> dict:
             "pages": meta["pages"], "chunks": meta["chunks"], "covered": 0, "position": {"started": False}}
     if state.cache is not None:
         try:
-            lesson = state.cache.get(doc_id).lesson
-            info["covered"] = lesson.percent_covered()
-            info["position"] = lesson.position()
+            doc = state.cache.get(doc_id)
+            info["covered"] = doc.lesson.percent_covered()
+            info["position"] = doc.lesson.position()
+            if doc.needs_embedding:  # indexed with the other embedding model: keyword search until re-embedded
+                info["keyword_only"] = True
+                state.ensure_embeddings(doc_id)
         except DocumentError as e:
             info["error"] = str(e)
     return info
@@ -114,7 +117,7 @@ def _notebook_payload(nb, with_history: bool = False) -> dict:
     payload["sources"] = [_source_info(d) for d in nb.sources]
     if with_history:
         payload["history"] = nb.history
-        payload["jobs"] = [j.to_dict() for j in state.jobs.for_notebook(nb.id)]
+        payload["jobs"] = [j.to_dict() for j in state.jobs.for_notebook(nb.id, nb.sources)]
     return payload
 
 
@@ -132,6 +135,8 @@ def status():
     return {
         "embedder": embedder,
         "embedder_error": state.embedder_error,
+        "embedding_mode": config.EMBEDDING_MODE,
+        "embedding_model": config.EMBEDDING_MODEL,
         "gemini_key": state.has_gemini_key(),
         "live_model": config.LIVE_MODEL,
         "web_provider": web.provider(),

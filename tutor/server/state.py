@@ -23,24 +23,80 @@ class AppState:
         self.notebooks = NotebookStore(config.NOTEBOOKS_DIR)
         self.jobs = JobQueue()
         self._settings_lock = threading.RLock()  # re-entrant: a nested call can never deadlock
+        self._reindex_lock = threading.Lock()
 
     def load_embedder(self) -> None:
         started = time.perf_counter()
-        log.info("Loading the embedding model (%s) in its own process ...", config.EMBEDDING_MODEL)
+        if config.EMBEDDING_MODE == "online":
+            log.info("Embeddings: online (%s via the Gemini API)", config.EMBEDDING_MODEL)
+        else:
+            log.info("Embeddings: offline. Loading the embedding model (%s) in its own process ...", config.EMBEDDING_MODEL)
         try:
-            from tutor.retrieval.worker import EmbedderClient, EmbeddingCrash
+            from tutor.retrieval.embedder import create_embedder
+            from tutor.retrieval.worker import EmbeddingCrash
 
-            self.embedder = EmbedderClient()
-            self.cache = DocumentCache(self.embedder)
-            log.info("Embeddings ready (%.1fs in total)", time.perf_counter() - started)
-        except EmbeddingCrash as e:  # crashed even in safe mode; the reason is in the message
-            log.error("%s", e)
-            self.embedder_error = str(e)
+            try:
+                embedder = create_embedder(isolated=True)
+                if config.EMBEDDING_MODE == "online":
+                    self._check_online(embedder)
+                self.embedder = embedder
+                self.cache = DocumentCache(self.embedder)
+                log.info("Embeddings ready (%.1fs in total)", time.perf_counter() - started)
+            except EmbeddingCrash as e:  # crashed even in safe mode; the reason is in the message
+                log.error("%s", e)
+                self.embedder_error = str(e)
         except Exception as e:
-            log.exception("Embedding model failed to load")
+            log.error("Embeddings unavailable: %s", e, exc_info=not isinstance(e, (ValueError, RuntimeError)))
             self.embedder_error = str(e)
         finally:
             self.embedder_ready.set()
+        if self.embedder is not None:
+            self.reindex_missing()
+
+    @staticmethod
+    def _check_online(embedder) -> None:
+        """A wrong key or model is an error now; no connection is only a warning (it may come back)."""
+        from tutor.retrieval.online import EmbeddingError
+
+        try:
+            embedder.check()
+        except EmbeddingError as e:
+            if not e.transient:
+                raise
+            log.warning("Online embeddings: %s", e)
+
+    # ---- embedding spaces ------------------------------------------------------------
+
+    def reindex_missing(self) -> None:
+        """Queue documents indexed with the other embedding model (EMBEDDING_MODEL changed) for re-embedding."""
+        from tutor.library import missing_embeddings
+
+        missing = missing_embeddings(self.embedder)
+        if missing:
+            log.info("%d document(s) were indexed with another embedding model; adding %s embeddings in the background",
+                     len(missing), self.embedder.model_name)
+        for doc_id in missing:
+            self.ensure_embeddings(doc_id)
+
+    def ensure_embeddings(self, doc_id: str) -> None:
+        """Re-embed a document for the current model, unless that's already queued, running or failed."""
+        from tutor.library import add_embeddings, read_meta
+
+        with self._reindex_lock:
+            if self.embedder is None or self.jobs.reindexing(doc_id):
+                return
+            meta = read_meta(doc_id)
+            if meta is None:
+                return
+
+            def work(job) -> None:
+                job.title = meta["title"]
+                add_embeddings(doc_id, self.embedder, log=log.debug,
+                               progress=lambda s, d, t: JobQueue.report(job, s, d, t))
+                if self.cache:
+                    self.cache.drop(doc_id)  # re-open with the new vectors
+
+            self.jobs.submit("", meta["title"], work, kind="reindex", doc_id=doc_id)
 
     def start(self) -> None:
         for folder in (config.DATA_ROOT, config.FILES_DIR, config.NOTEBOOKS_DIR):

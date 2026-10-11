@@ -141,7 +141,7 @@ def _locked_replace(times):
 
 
 def test_progress_save_retries_while_the_file_is_briefly_locked(tmp_path, monkeypatch):
-    import tutor.lesson as lesson_mod
+    import tutor.fileio as lesson_mod
     lesson = make_lesson(tmp_path)
     monkeypatch.setattr(lesson_mod.os, "replace", _locked_replace(2))
     lesson.read("next")
@@ -150,7 +150,7 @@ def test_progress_save_retries_while_the_file_is_briefly_locked(tmp_path, monkey
 
 
 def test_a_locked_progress_file_never_breaks_teaching(tmp_path, monkeypatch):
-    import tutor.lesson as lesson_mod
+    import tutor.fileio as lesson_mod
     lesson = make_lesson(tmp_path)
     monkeypatch.setattr(lesson_mod.time, "sleep", lambda s: None)
     monkeypatch.setattr(lesson_mod.os, "replace", _locked_replace(100))

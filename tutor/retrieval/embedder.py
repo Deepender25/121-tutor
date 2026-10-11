@@ -15,7 +15,10 @@ DOCUMENT_PROMPT = "title: {} | text: {}"
 
 
 class Embedder:
-    def __init__(self, model_name: str = config.EMBEDDING_MODEL, dim: int = config.EMBEDDING_DIM):
+    mode = "offline"
+    label = "Offline · EmbeddingGemma, on this computer"
+
+    def __init__(self, model_name: str = config.OFFLINE_EMBEDDING_MODEL, dim: int = config.EMBEDDING_DIM):
         import torch
         from sentence_transformers import SentenceTransformer
         from transformers import AutoTokenizer
@@ -74,3 +77,19 @@ class Embedder:
 
     def embed_query(self, query: str) -> np.ndarray:
         return self._encode([QUERY_PROMPT.format(query)])[0]
+
+
+def create_embedder(isolated: bool = False):
+    """The embedder EMBEDDING_MODEL asks for. offline: EmbeddingGemma, in this process (command-line tools) or in its
+    own crash-isolated process (isolated=True, the server). online: Gemini Embedding 2 over the API."""
+    if config.EMBEDDING_MODE_ERROR:
+        raise ValueError(config.EMBEDDING_MODE_ERROR)
+    if config.EMBEDDING_MODE == "online":
+        from tutor.retrieval.online import GeminiEmbedder
+
+        return GeminiEmbedder()
+    if isolated:
+        from tutor.retrieval.worker import EmbedderClient
+
+        return EmbedderClient()
+    return Embedder()

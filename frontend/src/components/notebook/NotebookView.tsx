@@ -177,7 +177,8 @@ function SourceItem({ ctl, s, index, active, many }: { ctl: Ctl; s: Source; inde
       <div className="file-tile"><Icon name="file" />{many ? <i>{String(index + 1)}</i> : null}</div>
       <div className="source-text">
         <div className="title">{s.title}</div>
-        <div className="sub">{s.missing ? "Missing — add it again" : `${s.pages} pages`}{active ? <span className="badge">Teaching</span> : null}</div>
+        <div className="sub" title={s.keyword_only ? "Indexed with the other embedding model. Search matches keywords until it's updated." : undefined}>
+          {s.missing ? "Missing — add it again" : `${s.pages} pages${s.keyword_only ? " · updating search" : ""}`}{active ? <span className="badge">Teaching</span> : null}</div>
       </div>
       {s.missing ? null : <Ring percent={s.covered} size={30} stroke={3} />}
       <button className="icon-btn xs remove" aria-label={`Remove ${s.title}`} data-tip="Remove"

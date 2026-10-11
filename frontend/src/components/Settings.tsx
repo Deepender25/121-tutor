@@ -190,11 +190,18 @@ function StatusList({ s }: { s: Status | null }) {
       <StatusRow ic="globe" label="Web search"
         value={s?.web_provider === "tavily" ? "Tavily" : "DuckDuckGo · add TAVILY_API_KEY for better results"}
         state={s?.web_provider === "tavily" ? "ok" : "neutral"} />
-      <StatusRow ic="cpu" label="Embeddings" value={s?.embedder === "ready" ? "Ready · runs locally" : (s?.embedder || "—")}
+      <StatusRow ic="cpu" label="Embeddings" value={embeddingText(s)}
         state={s?.embedder === "ready" ? "ok" : s?.embedder === "error" ? "bad" : "warn"} />
       {s?.log_file ? <StatusRow ic="logs" label="Logs" value={s.log_file} state="neutral" /> : null}
     </div>
   );
+}
+
+function embeddingText(s: Status | null): string {
+  if (!s) return "—";
+  if (s.embedder === "error") return s.embedder_error || "Error";
+  const where = s.embedding_mode === "online" ? "Online · Gemini Embedding 2, with your Gemini key" : "Offline · runs on this computer";
+  return s.embedder === "ready" ? where : `Loading · ${where}`;
 }
 
 function Shortcut({ keys, label }: { keys: string[]; label: string }) {

@@ -139,10 +139,10 @@ class SwitchDocument(Exception):
 
 def main() -> int:
     print("Loading the embedding model ...")
-    from tutor.retrieval.embedder import Embedder
+    from tutor.retrieval.embedder import create_embedder
     from tutor.tools import NotebookTools
 
-    embedder = Embedder()
+    embedder = create_embedder()
     cache = DocumentCache(embedder)
     pdf = Path(sys.argv[1].strip('"')) if len(sys.argv) > 1 else None
 

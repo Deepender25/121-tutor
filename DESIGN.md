@@ -459,3 +459,49 @@ better behaviour. Tried and rejected: word-pair evidence (more far jumps, no acc
 a pending switch when the answer ends (8 commits, 7 of them wrong). Verified live: a two-topic answer
 moved p5 (tank sizing) → p6 (maintenance) once, and a chapter explanation walked p3 → p4 in order.
 
+## 25. Offline or online embeddings (2026-10-11)
+
+Some computers can't run EmbeddingGemma (see §21). `EMBEDDING_MODEL` in `.env` picks the embedder: `offline`
+(default, EmbeddingGemma in its crash-isolated process) or `online` (Gemini Embedding 2 through `GEMINI_API_KEY`;
+`tutor/retrieval/online.py`). Anything else is an error shown in the API window and Settings. Command-line tools
+use the same setting (`create_embedder()`).
+
+**Online embedder, from the API's measured behaviour (not assumed):**
+- A list of plain strings is merged into ONE embedding (the model is multimodal); each text is sent as its own
+  `Content`, which returns one vector per text, identical to embedding it alone (checked: cosine 1.0).
+- At most 100 texts per request (`BatchEmbedContentsRequest`); `task_type` isn't supported, so the task goes in the
+  text, in the same format as EmbeddingGemma (`title: … | text: …`, `task: search result | query: …`, Google's
+  documented format for this model). `output_dimensionality=768`, renormalized by the API (and again by us).
+- Quota is counted per text: the free tier allows 100 a minute (`EmbedContentRequestsPerMinute…`). A client-side
+  sliding-window limiter keeps under it (`VOICE_TUTOR_ONLINE_EMBED_PER_MINUTE`), leaving 5 a minute for live
+  questions while indexing. A 429 is retried after the API's `RetryInfo` delay; a per-day quota is reported straight
+  away with what to do; 400/401/403/404 are explained (bad key, model unavailable); network errors and 5xx retry
+  with backoff. `EmbeddingError.transient` separates "may work later" from "fix the setup": at startup one tiny
+  check request turns a wrong key into a clear error, while no connection only warns.
+- Chunking still counts tokens with EmbeddingGemma's tokenizer (`tokenizer.json` only, 32 MB, public, no torch:
+  online mode never imports torch or downloads the model). Gemma shares Gemini's tokenizer, so chunk sizes fit.
+
+**Two vector spaces, no mixing.** The two models' vectors aren't comparable, so a document keeps one LanceDB table
+per embedding space (model, dimension, prompt version): the same chunks in the same order, vectors from one model
+each. `meta.json` lists them in `vector_indexes`. Opening a document picks the current embedder's table; a search
+embeds the question with the current embedder and searches only tables in that space, while keyword (BM25) search
+runs on every document. Chunk-level settings (chunker/index version) still force a full re-parse; the embedding
+model no longer does.
+
+**Switching modes.** On startup the server lists documents missing the current space and queues a background
+"reindex" job for each (`add_embeddings`: embeds the stored chunks, no re-parse; progress, orders and citations are
+unchanged). The job shows in every notebook that has the document ("Updating search · 40 of 115"); meanwhile that
+source is `keyword_only` and the search tool tells the tutor its results for it are keyword matches. Uploading a PDF
+that's already indexed in the other space only adds vectors. A failed job (e.g. daily quota) stays visible with its
+reason; dismissing it retries. If the question can't be embedded (no connection, quota), search falls back to
+keywords and says so instead of failing. Switching back is free, since both spaces are kept.
+Documents indexed before this change (one `chunks` table, model in `embedding_model`) read as an EmbeddingGemma
+index with nothing to migrate; adding a second space rewrites their metadata in the new format.
+
+**Verified:** 20 unit tests (fake client and embedders: batching, one vector per text, 429/daily/bad key/network,
+the limiter's headroom, space switching with progress kept, keyword fallback, legacy layout, the server's background
+job). Live against the Gemini API in a throwaway data folder: indexed a PDF offline and marked 64%, restarted
+online (ready in 3.2 s, no model loaded); the server re-embedded its 11 chunks in the background, progress stayed
+64%, search returned the same top results; a new upload online was indexed in the online space only. The real
+library (offline) opened unchanged with no re-indexing.
+

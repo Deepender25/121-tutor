@@ -14,6 +14,7 @@ export interface Source {
   position?: Position;
   missing?: boolean;
   error?: string;
+  keyword_only?: boolean; // indexed with the other embedding model: keyword search until it's re-embedded
 }
 
 export interface SearchRef {
@@ -58,6 +59,7 @@ export interface Job {
   error: string | null;
   doc_id: string | null;
   title: string | null;
+  kind: "ingest" | "reindex"; // reindex: an existing source getting vectors for the current embedding model
 }
 
 export interface NotebookSummary {
@@ -99,6 +101,8 @@ export interface Outline {
 export interface Status {
   embedder: "ready" | "loading" | "error";
   embedder_error: string | null;
+  embedding_mode: "offline" | "online"; // EMBEDDING_MODEL in .env
+  embedding_model: string;
   gemini_key: boolean;
   live_model: string;
   web_provider: "tavily" | "duckduckgo" | string;

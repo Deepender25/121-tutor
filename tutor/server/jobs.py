@@ -1,4 +1,7 @@
-"""Background ingestion jobs with progress, one at a time (embedding is CPU-bound)."""
+"""Background jobs with progress, one at a time (embedding is CPU-bound locally, rate-limited online).
+
+kind "ingest": a PDF being added to a notebook. kind "reindex": an existing document getting vectors for the current
+embedding model after EMBEDDING_MODEL changed; it shows in every notebook that has the document."""
 
 import logging
 import secrets
@@ -13,6 +16,7 @@ log = logging.getLogger("jobs")
 
 STAGE_WEIGHTS = {"queued": (0, 0), "parsing": (0, 15), "chunking": (15, 20), "embedding": (20, 95),
                  "saving": (95, 99), "done": (100, 100)}
+REINDEX_WEIGHTS = {**STAGE_WEIGHTS, "embedding": (0, 95)}  # no parsing: straight to embedding
 
 
 @dataclass
@@ -28,6 +32,7 @@ class Job:
     error: str | None = None
     doc_id: str | None = None
     title: str | None = None
+    kind: str = "ingest"  # ingest | reindex
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -39,8 +44,9 @@ class JobQueue:
         self._lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest")
 
-    def submit(self, notebook_id: str, file_name: str, work: Callable[[Job], None]) -> Job:
-        job = Job(secrets.token_hex(5), notebook_id, file_name)
+    def submit(self, notebook_id: str, file_name: str, work: Callable[[Job], None], kind: str = "ingest",
+               doc_id: str | None = None) -> Job:
+        job = Job(secrets.token_hex(5), notebook_id, file_name, kind=kind, doc_id=doc_id)
         with self._lock:
             self._jobs[job.id] = job
         log.info("Queued %s (job %s)", job.file_name, job.id)
@@ -63,7 +69,7 @@ class JobQueue:
     def report(job: Job, stage: str, done: int, total: int) -> None:
         previous_stage, previous_percent = job.stage, job.percent
         job.stage, job.done, job.total = stage, done, total
-        lo, hi = STAGE_WEIGHTS.get(stage, (0, 0))
+        lo, hi = (REINDEX_WEIGHTS if job.kind == "reindex" else STAGE_WEIGHTS).get(stage, (0, 0))
         fraction = done / total if total else 0
         job.percent = int(lo + (hi - lo) * fraction)
         if stage != previous_stage and stage != "done":
@@ -74,10 +80,17 @@ class JobQueue:
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
 
-    def for_notebook(self, notebook_id: str, include_finished: bool = False) -> list[Job]:
+    def for_notebook(self, notebook_id: str, doc_ids=(), include_finished: bool = False) -> list[Job]:
+        """Its uploads, plus re-indexing of any document it contains."""
         with self._lock:
-            return [j for j in self._jobs.values() if j.notebook_id == notebook_id
+            return [j for j in self._jobs.values()
+                    if (j.notebook_id == notebook_id or (j.kind == "reindex" and j.doc_id in doc_ids))
                     and (include_finished or j.status in ("queued", "running", "error"))]
+
+    def reindexing(self, doc_id: str) -> Job | None:
+        """The re-index job for a document that's queued, running or failed (not yet dismissed)."""
+        with self._lock:
+            return next((j for j in self._jobs.values() if j.kind == "reindex" and j.doc_id == doc_id), None)
 
     def dismiss(self, job_id: str) -> None:
         with self._lock:

@@ -14,7 +14,7 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 
 from tutor.library import DocumentCache, DocumentError, resolve_doc_id  # noqa: E402
-from tutor.retrieval.embedder import Embedder  # noqa: E402
+from tutor.retrieval.embedder import create_embedder  # noqa: E402
 from tutor.tools import NotebookTools  # noqa: E402
 
 
@@ -51,7 +51,7 @@ def main() -> int:
     ap.add_argument("-k", type=int, default=5)
     args = ap.parse_args()
 
-    embedder = Embedder()
+    embedder = create_embedder()
     try:
         doc_id = resolve_doc_id(args.doc)
         cache = DocumentCache(embedder)
