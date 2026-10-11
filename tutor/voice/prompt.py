@@ -25,12 +25,11 @@ def _sources_block(nb: Notebook, cache: DocumentCache) -> str:
         active = doc_id == nb.active_source
         outline = lesson.outline(max_level=2 if active else 1)
         tag = " [ACTIVE: the one being taught]" if active else ""
-        lines.append(f"{n}. \"{lesson.title}\", {outline['pages']} pages, {outline['document_covered']} covered{tag}")
+        lines.append(f"{n}. \"{lesson.title}\", {outline['pages']} pages{tag}")
         shown = outline["sections"][:MAX_OUTLINE_LINES if active else 12]
         for s in shown:
             indent = "   " * s["level"]
-            done = {"completed": " (completed)", "in_progress": " (in progress)"}.get(s["status"], "")
-            lines.append(f"{indent}- {s['title']} (p. {s['pages']}, id {s['id']}){done}")
+            lines.append(f"{indent}- {s['title']} (p. {s['pages']}, id {s['id']})")
         if len(outline["sections"]) > len(shown):
             lines.append("   ... more sections: call get_outline for the full list")
     return "\n".join(lines)

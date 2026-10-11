@@ -8,7 +8,7 @@ import { clockTime, dayLabel } from "@/lib/format";
 import { statusStore } from "@/lib/status";
 import { useStore } from "@/lib/store";
 import type { Notebook, Source, ToolUI } from "@/lib/types";
-import { Icon, Mark, NOTEBOOK_ICONS, NotebookIcon, Ring } from "../Icon";
+import { Icon, Mark, NOTEBOOK_ICONS, NotebookIcon } from "../Icon";
 import { copyText, modal, useHydrated } from "../overlays";
 import { openSettings, StatusPill } from "../Settings";
 import { type Act, createNotebookController, jobStageText, type Msg, type NotebookController, QUICK, type Tab } from "./controller";
@@ -145,12 +145,12 @@ const SourcesPanel = memo(function SourcesPanel({ ctl }: { ctl: Ctl }) {
             const failed = j.status === "error";
             return (
               <div key={j.id} className={`source job${failed ? " error" : ""}`}>
-                <div className="file-tile"><Icon name={failed ? "alert" : "loader"} className={failed ? "" : "spin"} /></div>
+                <div className="file-tile"><Icon name={failed ? "alert" : j.stage === "uploading" ? "upload" : "loader"} className={failed || j.stage === "uploading" ? "" : "spin"} /></div>
                 <div className="source-text">
                   <div className="title">{j.file_name}</div>
                   <div className="sub">{failed ? j.error : jobStageText(j)}</div>
                   {failed ? null : (
-                    <div className={`job-bar${j.stage === "queued" || j.stage === "parsing" ? " indeterminate" : ""}`}><i style={{ width: `${j.percent}%` }} /></div>
+                    <div className={`job-bar${j.stage === "queued" || j.stage === "parsing" || (j.stage === "uploading" && j.percent >= 100) ? " indeterminate" : ""}`}><i style={{ width: `${j.percent}%` }} /></div>
                   )}
                 </div>
                 {failed ? <button className="icon-btn xs" aria-label="Dismiss" onClick={() => ctl.dismissJob(j.id)}><Icon name="x" className="sm" /></button> : null}
@@ -181,7 +181,6 @@ function SourceItem({ ctl, s, index, active, many }: { ctl: Ctl; s: Source; inde
         <div className="sub" title={s.keyword_only ? "Indexed with the other embedding model. Search matches keywords until it's updated." : undefined}>
           {s.missing ? "Missing — add it again" : `${s.pages} pages${s.keyword_only ? " · updating search" : ""}`}{active ? <span className="badge">Teaching</span> : null}</div>
       </div>
-      {s.missing ? null : <Ring percent={s.covered} size={30} stroke={3} />}
       <button className="icon-btn xs remove" aria-label={`Remove ${s.title}`} data-tip="Remove"
         onClick={(e) => { e.stopPropagation(); ctl.removeSource(s.doc_id, s.title); }}>
         <Icon name="trash" className="sm" />
@@ -203,28 +202,18 @@ function OutlineBox({ ctl }: { ctl: Ctl }) {
       <>
         <div className="outline-head">
           <h3>Outline</h3>
-          <span className="outline-pct"><Ring percent={parseInt(o.document_covered, 10)} size={16} stroke={2.5} />{`${o.document_covered} covered`}</span>
           <button className="icon-btn xs" aria-label="Outline options" onClick={(e) => ctl.outlineMenu(e.currentTarget)}><Icon name="more" className="sm" /></button>
         </div>
         <div className="outline">
-          {o.sections.length ? o.sections.map((sec) => {
-            const done = sec.status === "completed";
-            return (
-              <div key={sec.id} className={cls("outline-item", `l${Math.min(sec.level, 3)}`, done && "covered",
-                sec.status === "in_progress" && "partial", sec.id === current && "current")}>
-                <button className="node" aria-pressed={done}
-                  aria-label={done ? `Mark “${sec.title}” as not done` : `Mark “${sec.title}” as completed`}
-                  title={done ? "Completed · click to mark as not done" : `${sec.status === "in_progress" ? "In progress" : "Not started"} · click to mark completed · Shift+click: everything up to here`}
-                  onClick={(e) => ctl.toggleSection(sec, e.shiftKey)}>
-                  {done ? <Icon name="check" className="sm" /> : null}
-                </button>
-                <button className="outline-teach" title={`Teach “${sec.title}”`} onClick={() => ctl.teachSection(sec)}>
-                  <span className="t">{sec.title}</span>
-                  <span className="p">{sec.pages}</span>
-                </button>
-              </div>
-            );
-          }) : <div className="viewer-empty">No sections found.</div>}
+          {o.sections.length ? o.sections.map((sec) => (
+            <button key={sec.id} className={cls("outline-item", `l${Math.min(sec.level, 3)}`, sec.id === current && "current")}
+              title={`Teach “${sec.title}”`} aria-current={sec.id === current ? "location" : undefined}
+              onClick={() => ctl.teachSection(sec)}>
+              <span className="node" aria-hidden="true" />
+              <span className="t">{sec.title}</span>
+              <span className="p">{sec.pages}</span>
+            </button>
+          )) : <div className="viewer-empty">No sections found.</div>}
         </div>
       </>
     );
@@ -325,7 +314,7 @@ function ActRow({ act, sources, ctl }: { act: Act; sources: Source[]; ctl: Ctl }
   return (
     <div className={cls("act", act.running && "running", act.error && "error")}>
       <span className="act-label"><Icon name={act.icon} />{act.label}{act.error ? ` — ${act.error}` : null}</span>
-      {act.ui && act.ui.kind !== "progress" ? <RefChips ui={act.ui} sources={sources} ctl={ctl} /> : null}
+      {act.ui ? <RefChips ui={act.ui} sources={sources} ctl={ctl} /> : null}
     </div>
   );
 }

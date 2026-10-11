@@ -23,7 +23,6 @@ export const TOOL_LABELS: Record<string, (a: Record<string, unknown>) => [string
   get_outline: () => ["list", "Checking the outline"],
   read_passage: (a) => ["book", passageLabel(String(a.target || "next").trim())],
   search_sources: (a) => ["search", `Searching your sources for “${a.query || ""}”`],
-  update_progress: (a) => ["listChecks", progressLabel(a)],
   web_search: (a) => ["globe", `Searching the web for “${a.query || ""}”`],
 };
 
@@ -31,13 +30,6 @@ export const TOOL_LABELS: Record<string, (a: Record<string, unknown>) => [string
 export function joinText(previous: string, piece: string): string {
   if (previous && piece && !/\s$/.test(previous) && !/^\s/.test(piece) && /[.!?,;:]$/.test(previous)) return `${previous} ${piece}`;
   return previous + piece;
-}
-
-function progressLabel(a: Record<string, unknown>): string {
-  const target = String(a.target || "").trim();
-  const all = /^(all|everything|(the )?(whole |entire )?document)$/i.test(target);
-  const what = all ? "everything" : a.through ? `everything up to “${target}”` : `“${target}”`;
-  return a.completed === false ? `Marking ${what} as not done` : `Marking ${what} as completed`;
 }
 
 function passageLabel(target: string): string {
@@ -56,7 +48,6 @@ export function refLabel(ref: ToolUI): [string, string] {
   if (ref.kind === "search") return ["search", `Searched your sources for “${ref.query}”`];
   if (ref.kind === "web") return ["globe", `Searched the web for “${ref.query}”`];
   if (ref.kind === "passage") return ["book", "Read"];
-  if (ref.kind === "progress") return ["listChecks", `${ref.summary} · ${ref.covered} covered`];
   return ["sparkles", ""];
 }
 
@@ -68,13 +59,16 @@ export const QUICK: [string, string, string, string][] = [
   ["web", "globe", "What's new?", "Search the web for anything newer or different from what my sources say."],
 ];
 
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
 export function jobStageText(j: Job): string {
-  if (j.stage === "queued") return "Waiting…";
+  if (j.stage === "uploading") return j.percent < 100 ? `Uploading… ${j.percent}%` : "Upload sent · starting…";
+  if (j.stage === "queued") return "Waiting for the previous PDF…";
   if (j.kind === "reindex") {
     // switched embedding model: the stored text gets new vectors; keyword search works meanwhile
     return j.stage === "embedding" ? `Updating search · ${j.done} of ${j.total}` : j.stage === "saving" ? "Saving…" : "Updating search…";
   }
-  if (j.stage === "parsing") return "Reading the PDF…";
+  if (j.stage === "parsing") return `Reading the PDF… ${clock(j.stage_seconds || 0)}`; // slow on a small server
   if (j.stage === "chunking") return "Finding sections…";
   if (j.stage === "embedding") return `Indexing ${j.done} of ${j.total}`;
   if (j.stage === "saving") return "Saving…";
@@ -143,6 +137,8 @@ const GUTTER = 12;
 
 let msgSeq = 0;
 
+const SHOWN_REFS = new Set<string>(["search", "passage", "web"]);
+
 function historyMessages(history: HistoryEntry[]): Msg[] {
   return history
     .filter((e) => e.role === "user" || e.role === "model")
@@ -154,7 +150,9 @@ function historyMessages(history: HistoryEntry[]): Msg[] {
       ts: e.ts || null,
       interrupted: false,
       acts: e.role === "model"
-        ? (e.refs || []).map((ref, i) => { const [icon, label] = refLabel(ref); return { key: `h${i}`, icon, label, running: false, error: null, ui: ref }; })
+        // Older history can hold kinds that no longer exist (e.g. progress marks): show only these.
+        ? (e.refs || []).filter((ref) => SHOWN_REFS.has(ref.kind))
+            .map((ref, i) => { const [icon, label] = refLabel(ref); return { key: `h${i}`, icon, label, running: false, error: null, ui: ref }; })
         : [],
     }));
 }
@@ -484,14 +482,10 @@ export function createNotebookController(initial: Notebook) {
         if (S.model && key) {
           patchMsg(S.model.id, (x) => ({
             ...x,
-            acts: x.acts.map((a) => (a.key !== key ? a : {
-              ...a, running: false, error: msg.error || null, ui: msg.ui || null,
-              label: msg.ui?.kind === "progress" ? refLabel(msg.ui)[1] : a.label,
-            })),
+            acts: x.acts.map((a) => (a.key !== key ? a : { ...a, running: false, error: msg.error || null, ui: msg.ui || null })),
           }));
         }
         if (msg.ui?.kind === "passage") onPassage(msg.ui);
-        if (msg.ui?.kind === "progress") refreshProgress();
         if (msg.ui?.kind === "search" || msg.ui?.kind === "passage") followMaterial(msg.ui);
         if (!S.toolsPending.size) patch("stage", { activity: msg.ui?.kind === "passage" ? `${msg.ui.section} · p. ${msg.ui.pages}` : "" });
         paintVoice();
@@ -604,16 +598,7 @@ export function createNotebookController(initial: Notebook) {
   function outlineMenu(anchor: Element) {
     openMenu(anchor, [
       { label: "Start from the beginning", icon: "play", action: () => sendText("Teach me from the beginning.") },
-      { label: "Mark all as completed", icon: "listChecks", action: () => markAll(true) },
-      { label: "Reset progress", icon: "reset", action: resetProgress },
     ]);
-  }
-
-  async function resetProgress() {
-    const o = get().outline;
-    const ok = await confirmDialog({ title: "Reset progress?", body: `Start “${o?.title || "this source"}” from scratch: every section goes back to not started and the reading position to the beginning.`, confirm: "Reset", danger: false });
-    if (!ok || !nb.active_source) return;
-    try { store.set({ outline: await api.resetProgress(nb.active_source) }); await reloadSources(); toast("Progress reset", "success"); } catch (e) { toast((e as Error).message, "error"); }
   }
 
   function teachSection(sec: OutlineSection) {
@@ -623,34 +608,6 @@ export function createNotebookController(initial: Notebook) {
     const n = nb.sources.findIndex((s) => s.doc_id === nb.active_source) + 1;
     const where = nb.sources.length > 1 ? ` of source ${n}` : "";
     sendText(`Teach me the section “${sec.title}” (section id ${sec.id})${where}.`);
-  }
-
-  async function refreshProgress() {
-    clearTimeout(progressTimer);
-    await reloadSources();
-    if (nb.active_source) await loadOutline();
-  }
-
-  // Ticks in the outline: click a section's circle to mark it completed / not completed;
-  // shift-click marks everything up to and including it.
-  async function toggleSection(sec: OutlineSection, upToHere: boolean) {
-    const docId = nb.active_source;
-    if (!docId) return;
-    const completed = upToHere || sec.status !== "completed";
-    try {
-      store.set({ outline: await api.markProgress(docId, sec.id, completed, upToHere) });
-      await reloadSources();
-    } catch (e) { toast((e as Error).message, "error"); }
-  }
-
-  async function markAll(completed: boolean) {
-    const docId = nb.active_source;
-    if (!docId) return;
-    try {
-      store.set({ outline: await api.markProgress(docId, "all", completed) });
-      await reloadSources();
-      toast(completed ? "Marked everything as completed" : "Cleared all progress", "success");
-    } catch (e) { toast((e as Error).message, "error"); }
   }
 
   let progressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -685,11 +642,28 @@ export function createNotebookController(initial: Notebook) {
     const pdfs = files.filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
     if (!pdfs.length) { toast("Only PDF files can be added.", "error"); return; }
     if (pdfs.length < files.length) toast("Skipped files that aren't PDFs.", "info");
+    // Show it straight away: sending the files can take a while before the server knows about them.
+    const tempId = `upload-${++uploadSeq}`;
+    const placeholder: Job = {
+      id: tempId, notebook_id: id, file_name: pdfs.length === 1 ? pdfs[0].name : `${pdfs.length} PDFs`,
+      status: "uploading", stage: "uploading", done: 0, total: 0, percent: 0, error: null, doc_id: null, title: null, kind: "ingest",
+    };
+    store.set((s) => ({ jobs: [...s.jobs, placeholder] }));
+    const update = (patchJob: Partial<Job>) =>
+      store.set((s) => ({ jobs: s.jobs.map((j) => (j.id === tempId ? { ...j, ...patchJob } : j)) }));
     try {
-      const { jobs } = await api.upload(id, pdfs);
-      store.set((s) => ({ jobs: [...s.jobs.filter((j) => !jobs.some((n) => n.id === j.id)), ...jobs] }));
+      const { jobs } = await api.upload(id, pdfs, (sent, total) => update({ percent: Math.min(100, Math.floor((sent / total) * 100)) }));
+      // The real jobs take the placeholder's place in the list (no flicker).
+      store.set((s) => {
+        const at = s.jobs.findIndex((j) => j.id === tempId);
+        const rest = s.jobs.filter((j) => j.id !== tempId && !jobs.some((n) => n.id === j.id));
+        return { jobs: at < 0 ? [...rest, ...jobs] : [...rest.slice(0, at), ...jobs, ...rest.slice(at)] };
+      });
       pollJobs();
-    } catch (e) { toast((e as Error).message, "error", 6000); }
+    } catch (e) {
+      store.set((s) => ({ jobs: s.jobs.filter((j) => j.id !== tempId) }));
+      toast((e as Error).message, "error", 6000);
+    }
   }
 
   // Jobs the server started on its own (re-indexing after an embedding-model switch) show up here too.
@@ -701,6 +675,7 @@ export function createNotebookController(initial: Notebook) {
     pollJobs();
   }
 
+  let uploadSeq = 0;
   let polling = false;
   async function pollJobs() {
     if (polling || S.disposed) return;
@@ -713,15 +688,14 @@ export function createNotebookController(initial: Notebook) {
           try {
             const fresh = await api.job(j.id);
             if (fresh.status === "done") {
+              // Load the new source first, then drop the progress row: no moment where it's gone.
+              store.set((s) => ({ jobs: s.jobs.map((x) => (x.id === j.id ? { ...fresh, status: "running", stage: "saving" } : x)) }));
+              if (fresh.kind === "reindex") await reloadSources();
+              else await reload();
               store.set((s) => ({ jobs: s.jobs.filter((x) => x.id !== j.id) }));
               api.dismissJob(j.id).catch(() => {});
-              if (fresh.kind === "reindex") {
-                toast(`Search is fully ready for “${fresh.title || fresh.file_name}”`, "success");
-                await reloadSources();
-              } else {
-                toast(`Added “${fresh.title || fresh.file_name}”`, "success");
-                await reload();
-              }
+              toast(fresh.kind === "reindex" ? `Search is fully ready for “${fresh.title || fresh.file_name}”`
+                : `Added “${fresh.title || fresh.file_name}”`, "success");
             } else {
               store.set((s) => ({ jobs: s.jobs.map((x) => (x.id === j.id ? fresh : x)) }));
             }
@@ -1236,7 +1210,7 @@ export function createNotebookController(initial: Notebook) {
     toggleMic: () => live?.toggleMic(),
     endLive: () => live?.end(),
     // sources & outline
-    pickFiles, upload, removeSource, dismissJob, setActive, teachSection, toggleSection, outlineMenu, rename, setIcon,
+    pickFiles, upload, removeSource, dismissJob, setActive, teachSection, outlineMenu, rename, setIcon,
     // viewer
     toggleViewer, setTab, openCitation, goToPage, prevPage, nextPage, zoomIn, zoomOut, fitWidth, setFollow,
     resumeFollow: () => resumeFollow(true), viewerPointer,

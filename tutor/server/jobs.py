@@ -8,7 +8,7 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -33,9 +33,12 @@ class Job:
     doc_id: str | None = None
     title: str | None = None
     kind: str = "ingest"  # ingest | reindex
+    stage_since: float = field(default_factory=time.monotonic)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data["stage_seconds"] = int(time.monotonic() - data.pop("stage_since"))
+        return data
 
 
 class JobQueue:
@@ -68,6 +71,8 @@ class JobQueue:
     @staticmethod
     def report(job: Job, stage: str, done: int, total: int) -> None:
         previous_stage, previous_percent = job.stage, job.percent
+        if stage != previous_stage:
+            job.stage_since = time.monotonic()
         job.stage, job.done, job.total = stage, done, total
         lo, hi = (REINDEX_WEIGHTS if job.kind == "reindex" else STAGE_WEIGHTS).get(stage, (0, 0))
         fraction = done / total if total else 0

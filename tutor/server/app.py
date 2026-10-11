@@ -15,7 +15,6 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel
 
 from tutor import config, web
-from tutor.lesson import LessonError
 from tutor.library import DocumentError, delete_document, doc_id_for, ingest, read_meta
 from tutor.notebooks import ICONS as NOTEBOOK_ICONS
 from tutor.server import auth_routes, pages
@@ -112,11 +111,10 @@ def _source_info(doc_id: str) -> dict:
     if meta is None:
         return {"doc_id": doc_id, "title": "(missing source)", "missing": True}
     info = {"doc_id": doc_id, "title": meta["title"], "file_name": meta.get("file_name", ""),
-            "pages": meta["pages"], "chunks": meta["chunks"], "covered": 0, "position": {"started": False}}
+            "pages": meta["pages"], "chunks": meta["chunks"], "position": {"started": False}}
     if state.cache is not None:
         try:
             doc = state.cache.get(doc_id)
-            info["covered"] = doc.lesson.percent_covered()
             info["position"] = doc.lesson.position()
             if doc.needs_embedding:  # indexed with the other embedding model: keyword search until re-embedded
                 info["keyword_only"] = True
@@ -339,34 +337,6 @@ async def doc_outline(doc_id: str):
         lesson = state.cache.get(doc_id).lesson
     except DocumentError as e:
         raise HTTPException(409, str(e))
-    return lesson.outline(max_level=3)
-
-
-class ProgressIn(BaseModel):
-    target: str
-    completed: bool = True
-    through: bool = False
-
-
-@app.post("/api/docs/{doc_id}/progress")
-async def mark_progress(doc_id: str, body: ProgressIn):
-    """Mark a section (or everything up to it, or 'all') completed / not completed. Returns the outline."""
-    _meta_or_404(doc_id)
-    await asyncio.to_thread(state.require_embedder)
-    lesson = state.cache.get(doc_id).lesson
-    try:
-        lesson.mark(body.target, completed=body.completed, through=body.through)
-    except LessonError as e:
-        raise HTTPException(400, str(e))
-    return lesson.outline(max_level=3)
-
-
-@app.post("/api/docs/{doc_id}/reset")
-async def reset_progress(doc_id: str):
-    _meta_or_404(doc_id)
-    await asyncio.to_thread(state.require_embedder)
-    lesson = state.cache.get(doc_id).lesson
-    lesson.reset()
     return lesson.outline(max_level=3)
 
 

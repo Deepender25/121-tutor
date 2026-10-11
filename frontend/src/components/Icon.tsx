@@ -31,21 +31,3 @@ export function Mark({ className = "" }: { className?: string }) {
     </svg>
   );
 }
-
-// Circular progress ring (0-100). Size in px.
-export function Ring({ percent, size = 28, stroke = 3 }: { percent: number | undefined; size?: number; stroke?: number }) {
-  const p = Math.max(0, Math.min(100, Math.round(percent || 0)));
-  const r = (size - stroke) / 2;
-  const c = 2 * Math.PI * r;
-  const half = size / 2;
-  return (
-    <span className="ring" style={{ width: size, height: size }} title={`${p}% covered`}>
-      <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} aria-hidden="true">
-        <circle className="ring-track" cx={half} cy={half} r={r} strokeWidth={stroke} fill="none" />
-        <circle className="ring-fill" cx={half} cy={half} r={r} strokeWidth={stroke} fill="none"
-          strokeDasharray={c} strokeDashoffset={c * (1 - p / 100)} strokeLinecap="round"
-          transform={`rotate(-90 ${half} ${half})`} />
-      </svg>
-    </span>
-  );
-}

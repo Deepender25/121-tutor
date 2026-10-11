@@ -226,7 +226,7 @@ def test_switching_models_adds_a_space_from_stored_chunks_and_keeps_progress(lib
 
     lesson = lib.open_document(doc_id, offline).lesson
     lesson.read("next")
-    lesson.mark("1", completed=True)
+    lesson.read("next")
     progress_before = json.loads((config.doc_dir(doc_id) / "progress.json").read_text(encoding="utf-8"))
 
     # Switched to online: the document opens, isn't in the new space yet, and is queued for it.

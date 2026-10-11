@@ -125,6 +125,9 @@ class GeminiLiveSession(VoiceSession):
             # Let people pause mid-sentence without the tutor jumping in.
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
+                    start_of_speech_sensitivity=(types.StartSensitivity.START_SENSITIVITY_LOW
+                                                 if config.VAD_START_SENSITIVITY == "low"
+                                                 else types.StartSensitivity.START_SENSITIVITY_HIGH),
                     end_of_speech_sensitivity=(types.EndSensitivity.END_SENSITIVITY_LOW
                                                if config.VAD_END_SENSITIVITY == "low"
                                                else types.EndSensitivity.END_SENSITIVITY_HIGH),

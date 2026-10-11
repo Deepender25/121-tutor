@@ -81,9 +81,12 @@ systemctl enable voice-tutor-api
 systemctl restart voice-tutor-api
 
 say "HTTPS (Caddy) for $API_DOMAIN"
-install -d -m 755 /var/log/caddy && chown caddy:caddy /var/log/caddy
+install -d -m 755 -o caddy -g caddy /var/log/caddy
 sed "s/^api\.tutor\.edgedrop\.app {/$API_DOMAIN {/" "$HERE/Caddyfile" > /etc/caddy/Caddyfile
-caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+# Validate as the caddy user: run as root, the check would create its log file owned by root, which the
+# service (user caddy) then can't open.
+runuser -u caddy -- caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+chown -R caddy:caddy /var/log/caddy
 systemctl enable caddy >/dev/null
 systemctl reload caddy 2>/dev/null || systemctl restart caddy
 

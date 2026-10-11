@@ -58,6 +58,9 @@ LIVE_MODEL = os.environ.get("VOICE_TUTOR_LIVE_MODEL", "gemini-3.8-live")
 # without the tutor jumping in (costs that much extra delay before each reply).
 VAD_SILENCE_MS = int(os.environ.get("VOICE_TUTOR_VAD_SILENCE_MS", "1000"))
 VAD_END_SENSITIVITY = os.environ.get("VOICE_TUTOR_VAD_END_SENSITIVITY", "low")  # "low" | "high"
+# How readily sound counts as you starting to talk (which interrupts the tutor). "low": a clear voice still does,
+# but the tutor's own voice coming back through a phone speaker, or background noise, doesn't cut it off.
+VAD_START_SENSITIVITY = os.environ.get("VOICE_TUTOR_VAD_START_SENSITIVITY", "low")  # "low" | "high"
 
 
 def gemini_api_key() -> str:

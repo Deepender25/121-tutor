@@ -100,13 +100,11 @@ def test_search_endpoint(client, notebook):
     assert refs[0]["page"] == 6 and "chlorine" in refs[0]["snippet"]
 
 
-def test_rename_and_progress_reset(client, notebook):
+def test_rename_and_icon(client, notebook):
     r = client.patch(f"/api/notebooks/{notebook['id']}", json={"name": "  Rainwater  ", "icon": "leaf"}).json()
     assert r["name"] == "Rainwater" and r["icon"] == "leaf"
     assert client.patch(f"/api/notebooks/{notebook['id']}", json={"icon": "🌧️"}).status_code == 400
     assert client.patch(f"/api/notebooks/{notebook['id']}", json={"active_source": "nope"}).status_code == 400
-    reset = client.post(f"/api/docs/{notebook['doc_id']}/reset").json()
-    assert reset["position"] == {"started": False}
 
 
 def test_tools_and_prompt(client, notebook):
@@ -126,30 +124,27 @@ def test_tools_and_prompt(client, notebook):
     assert "{" not in prompt.split("# Ground rules")[0]  # every placeholder filled
 
 
-def test_progress_tool_and_outline_ticks(client, notebook):
+def test_completion_tracking_is_gone(client, notebook):
+    """No percentages, ticks or marking anywhere: not for the tutor, not in the API, not in the prompt."""
     from tutor.server.app import state
-    from tutor.tools import NotebookTools
+    from tutor.tools import DECLARATIONS, NotebookTools
     from tutor.voice.prompt import build_system_prompt
 
     doc = notebook["doc_id"]
-    client.post(f"/api/docs/{doc}/reset")
+    assert "update_progress" not in {d["name"] for d in DECLARATIONS}
     nb = state.notebooks.get(notebook["id"])
     tools = NotebookTools(state.cache, state.embedder, nb.sources, nb.active_source)
-    # "mark everything up to point 2 as done"
-    out = tools.call("update_progress", {"target": "point 2", "through": True})
-    assert out.result["completed"] and out.result["marked"] == "everything up to and including 2 System Components"
-    assert out.ui == {"kind": "progress", "doc_id": doc, "completed": True,
-                      "summary": "Marked everything up to and including 2 System Components", "covered": out.result["document_covered"]}
-    status = {s["title"]: s["status"] for s in client.get(f"/api/docs/{doc}/outline").json()["sections"]}
-    assert status["1 Introduction"] == status["2.3 Filters"] == "completed" and status["3 Design"] == "not_started"
-    assert "1.1 Why harvest rainwater (p. 1-2, id s001) (completed)" in build_system_prompt(nb, state.cache)
-    # The outline's tick button: untick one subsection; its chapter becomes "in progress"
-    outline = client.post(f"/api/docs/{doc}/progress", json={"target": "s004", "completed": False}).json()
-    status = {s["title"]: s["status"] for s in outline["sections"]}
-    assert status["2.1 Catchment"] == "not_started" and status["2 System Components"] == "in_progress"
-    assert client.post(f"/api/docs/{doc}/progress", json={"target": "nonsense words"}).status_code == 400
-    assert "error" in tools.call("update_progress", {"target": "nonsense words"}).result
-    client.post(f"/api/docs/{doc}/reset")
+    assert "Unknown tool" in tools.call("update_progress", {"target": "all"}).result["error"]
+    for path in (f"/api/docs/{doc}/progress", f"/api/docs/{doc}/reset"):
+        assert client.post(path, json={"target": "all"}).status_code in (404, 405), path
+    outline = client.get(f"/api/docs/{doc}/outline").json()
+    assert "document_covered" not in outline and all(set(s) == {"id", "title", "level", "pages"} for s in outline["sections"])
+    source = client.get(f"/api/notebooks/{notebook['id']}").json()["sources"][0]
+    assert "covered" not in source
+    passage = tools.call("read_passage", {"target": "start"})
+    assert "document_covered" not in passage.result and "covered" not in passage.ui
+    prompt = build_system_prompt(nb, state.cache)
+    assert "covered" not in prompt.split("# Reading position")[0].split("sources")[-1] and "(completed)" not in prompt
 
 
 def test_shared_source_lifecycle(client, notebook):

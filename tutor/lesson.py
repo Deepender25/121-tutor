@@ -1,22 +1,14 @@
-"""Reading cursor + progress over a document's ordered chunks.
+"""Reading position over a document's ordered chunks.
 
 Position lives here, not in the voice model's memory: context compression drops old turns, so the
 model is told where we are on every (re)connect and moves through the document only via read().
-
-Completion is tracked per chunk: a chunk is finished when it was read (read_passage) or marked complete
-(by the person in the outline, or by the tutor with update_progress). Everything else is derived from
-that, so it can never disagree with itself:
-  - a section is "completed" when every chunk in it and its subsections is finished, "in_progress" when
-    some are, otherwise "not_started" (parents roll up automatically);
-  - the document's percentage is the share of its content (chunks) that is finished.
-Marking a section incomplete clears its chunks (read or marked), so it really shows as not done.
 """
 
 import json
 import logging
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,31 +26,19 @@ class LessonError(ValueError):
 @dataclass
 class Progress:
     cursor: int = -1  # order of the chunk last read; -1 = not started
-    read: set[int] = field(default_factory=set)  # chunks read with read_passage
-    done: set[int] = field(default_factory=set)  # chunks marked complete (outline or update_progress)
     last_summary: str = ""
     updated_at: str = ""
 
     @classmethod
     def load(cls, path: Path) -> "Progress":
+        """Older files also hold read/done chunk lists (completion tracking, since removed); they're ignored."""
         if not path.exists():
             return cls()
         data = json.loads(path.read_text(encoding="utf-8"))
-        return cls(data["cursor"], set(data["read"]), set(data.get("done", [])),
-                   data.get("last_summary", ""), data.get("updated_at", ""))
-
-    @property
-    def finished(self) -> set[int]:
-        return self.read | self.done
+        return cls(int(data.get("cursor", -1)), data.get("last_summary", ""), data.get("updated_at", ""))
 
     def save(self, path: Path) -> None:
-        data = {
-            "cursor": self.cursor,
-            "read": sorted(self.read),
-            "done": sorted(self.done),
-            "last_summary": self.last_summary,
-            "updated_at": self.updated_at,
-        }
+        data = {"cursor": self.cursor, "last_summary": self.last_summary, "updated_at": self.updated_at}
         with _save_lock:
             fileio.write_json(path, data)
 
@@ -68,7 +48,6 @@ def _pages(start: int, end: int) -> str:
 
 
 _PAGE = re.compile(r"^page[\s:]*(\d+)$", re.IGNORECASE)
-_WHOLE = {"all", "everything", "document", "the whole document", "whole document", "the document", "entire document"}
 _SECTION_ID = re.compile(r"^s\d+$")
 _NUMBER_REF = re.compile(r"^(?:chapter|section|part|unit|lesson|module|point|topic|ch\.?|sec\.?)?\s*(\d+(?:\.\d+)*)\.?$")
 _LEADING_NUMBER = re.compile(r"^(?:chapter|section|part|unit|lesson|module)?\s*(\d+(?:\.\d+)*)\b")
@@ -81,6 +60,8 @@ class Lesson:
         self.chunks = chunks
         self.progress_path = progress_path
         self.progress = Progress.load(progress_path) if progress_path else Progress()
+        if self.progress.cursor >= len(chunks):  # a stale file from an older index
+            self.progress.cursor = -1
         self._by_id = {s.section_id: s for s in sections}
         # Each section's OWN chunk range (excluding children), for "part k of n".
         self._own: dict[str, tuple[int, int]] = {}
@@ -148,7 +129,6 @@ class Lesson:
         own_first, own_last = self._own[chunk.section_id]
 
         self.progress.cursor = order
-        self.progress.read.add(order)
         self.progress.last_summary = (
             f"Last read: {chunk.heading_path or section.title}, page {_pages(chunk.page_start, chunk.page_end)}."
         )
@@ -162,13 +142,7 @@ class Lesson:
             "position": f"{section.title}, part {order - own_first + 1} of {own_last - own_first + 1}",
             "is_section_end": order == own_last,
             "is_document_end": order == len(self.chunks) - 1,
-            "document_covered": f"{self.percent_covered()}%",
         }
-
-    def reset(self) -> None:
-        """Forget progress: back to 'not started', nothing covered."""
-        self.progress = Progress()
-        self._save()
 
     def _save(self) -> None:
         self.progress.updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -177,79 +151,10 @@ class Lesson:
         try:
             self.progress.save(self.progress_path)
         except OSError as e:
-            # Progress is kept in memory and every save writes all of it, so the next change saves this one too.
+            # The position is kept in memory and every save writes all of it, so the next change saves this one too.
             # Teaching must not fail because a file was briefly locked.
-            log.warning("Couldn't save reading progress to %s (%s); it will be saved with the next change.",
+            log.warning("Couldn't save the reading position to %s (%s); it will be saved with the next change.",
                         self.progress_path, e)
-
-    # ---- completion ----------------------------------------------------------------------
-
-    @staticmethod
-    def _subtree(section: Section) -> range:
-        """Chunk orders of a section and all its subsections."""
-        return range(section.first_order, section.last_order + 1) if section.first_order >= 0 else range(0)
-
-    def resolve_section(self, target: str) -> Section:
-        """A section by id ('s012'), number ('14', 'chapter 3'), words from its title, or a page ('page:40')."""
-        t = (target or "").strip().lower()
-        if not t:
-            raise LessonError("Say which section: its number, title or id from the outline.")
-        if _SECTION_ID.match(t) and t in self._by_id:
-            return self._by_id[t]
-        if m := _PAGE.match(t):
-            chunk = self.chunks[self._order_for_page(int(m.group(1)))]
-            return self._by_id[chunk.section_id]
-        section = self._find_by_title(t)
-        if section is None:
-            raise LessonError(f"No section matches '{target}'. Use get_outline to see the sections and their ids.")
-        return section
-
-    def status(self, section: Section) -> str:
-        orders = self._subtree(section)
-        if not orders:
-            return "not_started"
-        finished = self.progress.finished
-        hits = sum(1 for o in orders if o in finished)
-        return "completed" if hits == len(orders) else "in_progress" if hits else "not_started"
-
-    def mark(self, target: str, completed: bool = True, through: bool = False) -> dict:
-        """Mark a section (with its subsections), everything up to and including it (through), or the whole
-        document ('all') as completed or not completed."""
-        last = len(self.chunks) - 1
-        if last < 0:
-            raise LessonError("The document has no readable text.")
-        if (target or "").strip().lower() in _WHOLE:
-            orders, label = range(0, last + 1), "the whole document"
-        else:
-            section = self.resolve_section(target)
-            if section.first_order < 0:
-                raise LessonError(f"Section '{section.title}' has no text to mark.")
-            if through:
-                orders, label = range(0, section.last_order + 1), f"everything up to and including {section.title}"
-            else:
-                orders, label = self._subtree(section), section.title
-        before = {s.section_id: self.status(s) for s in self.sections if s.first_order >= 0}
-        if completed:
-            self.progress.done.update(orders)
-            # Continue after what was just completed when it reaches the reading position (or nothing was read
-            # yet), so "continue" picks up with the first part that isn't done.
-            cursor = self.progress.cursor
-            if through or cursor < 0 or cursor in orders:
-                self.progress.cursor = max(cursor, orders[-1])
-        else:
-            self.progress.done.difference_update(orders)
-            self.progress.read.difference_update(orders)
-        self._save()
-        changed = [s for s in self.sections if s.first_order >= 0 and self.status(s) != before[s.section_id]]
-        total = sum(1 for s in self.sections if s.first_order >= 0)
-        done = sum(1 for s in self.sections if s.first_order >= 0 and self.status(s) == "completed")
-        return {
-            "marked": label,
-            "completed": completed,
-            "sections_changed": len(changed),
-            "sections_completed": f"{done} of {total}",
-            "document_covered": f"{self.percent_covered()}%",
-        }
 
     def position(self) -> dict:
         cursor = self.progress.cursor
@@ -266,15 +171,6 @@ class Lesson:
             "part": f"{cursor - own_first + 1} of {own_last - own_first + 1}",
         }
 
-    def is_covered(self, section: Section) -> bool:
-        return self.status(section) == "completed"
-
-    def percent_covered(self) -> int:
-        if not self.chunks:
-            return 0
-        finished = sum(1 for o in self.progress.finished if 0 <= o < len(self.chunks))
-        return round(100 * finished / len(self.chunks))
-
     def outline(self, max_level: int = 2) -> dict:
         top = min((s.level for s in self.sections), default=1)
         return {
@@ -286,12 +182,9 @@ class Lesson:
                     "title": s.title,
                     "level": s.level - top + 1,
                     "pages": _pages(s.page_start, s.page_end),
-                    "status": (status := self.status(s)),
-                    "covered": status == "completed",
                 }
                 for s in self.sections
                 if s.level - top + 1 <= max_level and s.first_order >= 0
             ],
             "position": self.position(),
-            "document_covered": f"{self.percent_covered()}%",
         }

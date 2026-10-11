@@ -566,3 +566,38 @@ pages, a voice reply) unchanged; and the hosted setup simulated with `tutor.loca
 across both hosts and invisible to scripts, page images and the voice WebSocket across origins, an online-embedding
 search answer, sign-out and sign-out-everywhere, return-to-page after sign-in, and `next=//evil.example` refused.
 
+## 27. Simplified progress, upload feedback, phones and audio (2026-10-11)
+
+**Completion tracking removed** (supersedes §23 at the person's request). No percentages, rings, ticks, section
+statuses or marking anywhere: the `update_progress` tool, `POST /api/docs/{id}/progress` and `/reset`, the outline
+menu items, the chat chips, and the prompt's "(completed)" annotations are gone. What stays is the reading
+position (`Lesson.read`/`position`), which is how lessons resume ("continue", "part 2 of 5"). `progress.json` keeps
+only the cursor; older files with read/done lists load and drop them on the next save; a cursor past the end of
+the document starts over. Old history entries with progress chips are filtered out when shown.
+
+**Upload feedback.** Measured on the VPS: sending a 6.7 MB PDF took 15-18 s and a 14 MB one 42 s, during which
+nothing was shown (the job only existed once the upload finished); reading a PDF took ~100 s on the 1/8 CPU; and
+when a job finished its row vanished a moment before the source appeared. Now uploads go through XMLHttpRequest
+(fetch can't report upload progress) and a row appears the instant files are picked: "Uploading… 45%", then
+"Upload sent · starting…", replaced in place by the real job(s). The server reports how long the current stage has
+run (`stage_seconds`), shown as "Reading the PDF… 1:12". When a job finishes, the notebook (with the new source) is
+loaded first and the row removed after, so there's never a gap. Verified with a recorded DOM timeline.
+
+**Phones** (checked at 360 and 375 px with touch emulation): no horizontal overflow on any screen; controls that
+only appeared on hover (notebook menu, remove source, copy) are always shown on touchscreens, with 34 px touch
+targets; inputs are 16 px on touch devices (iPhones zoom into smaller ones); dialogs size to the visible viewport
+(`dvh`); the continue card stacks with a full-width Resume; Settings hides keyboard shortcuts on touch and wraps
+long values; pinch zooms the PDF (two-finger handler in `pdf-view.ts`, `touch-action: pan-x pan-y` so the browser
+doesn't zoom the app); no tap highlight flash. **Screen stays on** while the app is open on a phone (Screen Wake
+Lock API, re-taken when the page becomes visible again or on a tap; desktops unaffected).
+
+**Beeps and "sirens" on a phone.** Likely causes found in the audio path: (1) on a phone speaker the mic hears the
+tutor, Gemini's voice activity detection takes that as the person speaking and interrupts its own reply, again and
+again; each hard stop of the audio clicks, and the native-audio model hearing itself can produce odd tones;
+(2) interruptions stopped the audio mid-waveform; (3) a chunk with an odd byte count would misalign every later
+PCM16 sample (loud noise). Fixes: Gemini's start-of-speech sensitivity is LOW (`VOICE_TUTOR_VAD_START_SENSITIVITY`):
+a clear voice still interrupts, echo and noise don't; interrupted replies fade out over 40 ms on their own gain
+node before stopping; odd trailing bytes are carried into the next chunk. Interruptions are now logged per session
+("Voice session ended after 2m30s, 4 exchanges, 1 interruption"), so a real phone session shows whether echo still
+cuts in.
+

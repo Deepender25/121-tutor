@@ -75,7 +75,7 @@ Run `python app.py --debug` to see everything in the API window too.
 ## What's in the app
 
 - **Notebooks** with multiple PDF sources each. Search covers all sources; teaching follows the active
-  source. Each PDF remembers where you stopped and what's covered.
+  source. Each PDF remembers where you stopped, so "continue" picks up from there.
 - **Voice mode**: live, interruptible conversation (Gemini Live). The text bar works like ChatGPT's: type, or
   tap the orb on its right to talk. While talking, the bar has the mic, a box to keep typing, and **End**; the
   conversation stays on screen with a floating orb above the bar. Tap that orb for the full orb view, and
@@ -92,11 +92,11 @@ Run `python app.py --debug` to see everything in the API window too.
   to reset; drag Sources all the way left to hide it). Sizes are remembered.
 - **Full-screen reading** (the ⛶ button in the viewer, or press F): the PDF fills the screen and the
   tutor becomes a floating orb with a speech bubble showing what it says. Tap the orb to talk; Esc exits.
-- **Outline with progress**: each section shows completed (tick), in progress (tinted) or not started. Click a
-  section's title to have it taught; click its circle to mark it completed or not (Shift+click: everything up
-  to there); the outline menu can mark everything completed or reset. You can also just ask the tutor ("mark
-  everything up to 14 as done", "I already know chapter 2", "unmark 3.1"). Reading with the tutor marks what's
-  read automatically; a chapter completes when all of it is done.
+- **Outline**: every section with its pages; the one you're on is marked. Tap a section to have it taught.
+- **Uploads** show progress the whole way: the upload itself (with a percentage), reading the PDF (with a timer),
+  indexing, and the new source appears the moment it's ready.
+- **Phones**: the layout switches to Sources / Chat / Page tabs; pinch to zoom the PDF; every control works by
+  touch; the screen stays on while the app is open.
 - **Web research** via Tavily when `TAVILY_API_KEY` is set in `.env`, otherwise DuckDuckGo (free, no key).
 
 ## Where things live

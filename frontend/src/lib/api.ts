@@ -59,6 +59,29 @@ async function request<T>(method: string, url: string, body?: unknown, isForm = 
   return data as T;
 }
 
+// Uploads go through XMLHttpRequest: fetch can't report upload progress, and a 15 MB PDF can take most of a
+// minute to send. Same errors and sign-in handling as request().
+function uploadForm<T>(url: string, form: FormData, onProgress?: (sent: number, total: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", apiUrl(url));
+    xhr.withCredentials = true;
+    xhr.timeout = 15 * 60 * 1000;
+    xhr.responseType = "json";
+    if (onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+    xhr.onload = () => {
+      const data = (xhr.response || {}) as { detail?: unknown };
+      if (xhr.status === 401) toSignIn();
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
+      else if (xhr.status >= 500 && typeof data.detail !== "string") reject(new Error(OFFLINE));
+      else reject(new Error(typeof data.detail === "string" ? data.detail : `Upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error(OFFLINE));
+    xhr.ontimeout = () => reject(new Error(SLOW));
+    xhr.send(form);
+  });
+}
+
 export const api = {
   status: () => request<Status>("GET", "/api/status", undefined, false, 8000),
   saveSettings: (s: { voice: string }) => request<Status>("PUT", "/api/settings", s),
@@ -70,19 +93,15 @@ export const api = {
   deleteNotebook: (id: string) => request<null>("DELETE", `/api/notebooks/${id}`),
   clearHistory: (id: string) => request<null>("DELETE", `/api/notebooks/${id}/history`),
   search: (id: string, q: string) => request<{ refs: SearchRef[] }>("GET", `/api/notebooks/${id}/search?q=${encodeURIComponent(q)}`),
-  upload: (id: string, files: File[]) => {
+  upload: (id: string, files: File[], onProgress?: (sent: number, total: number) => void) => {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);
-    return request<{ jobs: Job[] }>("POST", `/api/notebooks/${id}/sources`, form, true, 10 * 60 * 1000);
+    return uploadForm<{ jobs: Job[] }>(`/api/notebooks/${id}/sources`, form, onProgress);
   },
   removeSource: (id: string, docId: string) => request<null>("DELETE", `/api/notebooks/${id}/sources/${docId}`),
   job: (jobId: string) => request<Job>("GET", `/api/jobs/${jobId}`),
   dismissJob: (jobId: string) => request<null>("DELETE", `/api/jobs/${jobId}`),
   outline: (docId: string) => request<Outline>("GET", `/api/docs/${docId}/outline`),
-  resetProgress: (docId: string) => request<Outline>("POST", `/api/docs/${docId}/reset`),
-  // target: a section id, number or title, or "all"; through: everything up to and including it
-  markProgress: (docId: string, target: string, completed: boolean, through = false) =>
-    request<Outline>("POST", `/api/docs/${docId}/progress`, { target, completed, through }),
   locate: (docId: string, text: string, first: number, last?: number) =>
     request<Located>("GET", `/api/docs/${docId}/locate?first=${first}&last=${last || first}&text=${encodeURIComponent(text.slice(0, 1500))}`),
   pageSizes: (docId: string) => request<{ sizes: [number, number][] }>("GET", `/api/docs/${docId}/pages`),

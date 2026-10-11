@@ -56,7 +56,9 @@ def banner() -> None:
 
     key = "set" if os.environ.get("GEMINI_API_KEY", "").strip() else "MISSING (voice disabled; add it to .env)"
     rows = [
-        ("Open", f"{config.UI_URL}  (the UI window serves the app)"),
+        ("Open", f"{config.APP_URL}  (the hosted frontend)" if config.PUBLIC_ORIGINS
+                 else f"{config.UI_URL}  (the UI window serves the app)"),
+        ("Login", "on" if config.AUTH_ENABLED else "off (local use)"),
         ("API", config.API_URL),
         ("Python", f"{sys.executable}  ({'virtual env' if in_venv() else 'NOT a virtual env'})"),
         ("Data", str(config.DATA_ROOT)),

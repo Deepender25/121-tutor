@@ -4,6 +4,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { startStatusPolling } from "@/lib/status";
+import { keepScreenOn } from "@/lib/wake-lock";
 import { closeAllOverlays, OverlayHosts } from "./overlays";
 
 export function AppShell() {
@@ -12,6 +13,8 @@ export function AppShell() {
 
   // Not on the sign-in page: there's no session yet to ask with (signing in reloads the page, which starts it).
   useEffect(() => { if (!location.pathname.startsWith("/login")) startStatusPolling(); }, []);
+
+  useEffect(() => keepScreenOn(), []); // phones: the screen stays on while the app is open
 
   // Dialogs and menus belong to the page they were opened on.
   useEffect(() => { closeAllOverlays(); }, [pathname]);

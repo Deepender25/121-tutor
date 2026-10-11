@@ -90,7 +90,7 @@ class TurnRecorder:
         self.model = join_text(self.model, text)
 
     def ref(self, ui: dict) -> None:
-        if ui and ui.get("kind") in ("search", "passage", "web", "progress"):
+        if ui and ui.get("kind") in ("search", "passage", "web"):
             self.refs.append(without_text(ui))
 
     def flush(self) -> None:
@@ -149,6 +149,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
     log.info("Voice session started: \"%s\" (%d source%s, voice %s, model %s)", notebook.name, len(notebook.sources),
              "" if len(notebook.sources) == 1 else "s", voice, config.LIVE_MODEL)
     timing = {"input_at": None}  # when the user's latest input arrived, for reply-latency logging
+    interruptions = [0]  # replies cut off by (what Gemini heard as) the person talking: echo shows up here
 
     def on_active_change(doc_id: str) -> None:
         with contextlib.suppress(KeyError):
@@ -173,6 +174,9 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
             else:
                 recorder.model_text(event.data["text"])
                 guard.model_output()
+        elif event.kind == "interrupted":
+            interruptions[0] += 1
+            log.info("Reply interrupted (Gemini heard speech)")
         elif event.kind == "tool_call":
             guard.tool_called(event.data.get("name", ""))
         elif event.kind == "tool_result":
@@ -257,8 +261,8 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
         await session.close()
         recorder.flush()
         minutes, seconds = divmod(int(time.perf_counter() - started), 60)
-        log.info("Voice session ended after %dm%02ds, %d exchange%s", minutes, seconds, recorder.turns,
-                 "" if recorder.turns == 1 else "s")
+        log.info("Voice session ended after %dm%02ds, %d exchange%s, %d interruption%s", minutes, seconds,
+                 recorder.turns, "" if recorder.turns == 1 else "s", interruptions[0], "" if interruptions[0] == 1 else "s")
         for task in (read_task, run_task):
             task.cancel()
         with contextlib.suppress(Exception):

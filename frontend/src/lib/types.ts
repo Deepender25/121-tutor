@@ -10,7 +10,6 @@ export interface Source {
   file_name?: string;
   pages?: number;
   chunks?: number;
-  covered?: number;
   position?: Position;
   missing?: boolean;
   error?: string;
@@ -35,9 +34,8 @@ export interface WebLink {
 
 export type ToolUI =
   | { kind: "search"; query: string; refs: SearchRef[] }
-  | { kind: "passage"; doc_id: string; page: number; pages: string; section: string; position: string; covered: string; snippet: string; text?: string }
+  | { kind: "passage"; doc_id: string; page: number; pages: string; section: string; position: string; snippet: string; text?: string }
   | { kind: "web"; query: string; links: WebLink[] }
-  | { kind: "progress"; doc_id: string; completed: boolean; summary: string; covered: string }
   | { kind: "error"; message: string };
 
 export interface HistoryEntry {
@@ -51,8 +49,8 @@ export interface Job {
   id: string;
   notebook_id: string;
   file_name: string;
-  status: "queued" | "running" | "done" | "error";
-  stage: "queued" | "parsing" | "chunking" | "embedding" | "saving" | "done";
+  status: "uploading" | "queued" | "running" | "done" | "error"; // uploading: still on its way (browser only)
+  stage: "uploading" | "queued" | "parsing" | "chunking" | "embedding" | "saving" | "done";
   done: number;
   total: number;
   percent: number;
@@ -60,6 +58,7 @@ export interface Job {
   doc_id: string | null;
   title: string | null;
   kind: "ingest" | "reindex"; // reindex: an existing source getting vectors for the current embedding model
+  stage_seconds?: number; // how long the current stage has been running (server clock)
 }
 
 export interface NotebookSummary {
@@ -79,15 +78,11 @@ export interface Notebook extends NotebookSummary {
   jobs: Job[];
 }
 
-export type SectionStatus = "completed" | "in_progress" | "not_started";
-
 export interface OutlineSection {
   id: string;
   title: string;
   level: number;
   pages: string;
-  status: SectionStatus;
-  covered: boolean; // status === "completed"
 }
 
 export interface Outline {
@@ -95,7 +90,6 @@ export interface Outline {
   pages: number;
   sections: OutlineSection[];
   position: Position;
-  document_covered: string;
 }
 
 export interface Status {

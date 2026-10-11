@@ -128,7 +128,7 @@ function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
 
         <Section title="System"><StatusList s={s} /></Section>
 
-        <Section title="Keyboard shortcuts">
+        <Section title="Keyboard shortcuts" className="keyboard-only">
           <div className="shortcuts">
             <Shortcut keys={["/"]} label="Type a message" />
             <Shortcut keys={["M"]} label="Mute or unmute the mic during a conversation" />
@@ -187,9 +187,9 @@ function AccountSection() {
   );
 }
 
-function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+function Section({ title, hint, className, children }: { title: string; hint?: string; className?: string; children: React.ReactNode }) {
   return (
-    <section className="sheet-section">
+    <section className={`sheet-section${className ? ` ${className}` : ""}`}>
       <div className="sheet-section-head"><h3>{title}</h3>{hint ? <p>{hint}</p> : null}</div>
       {children}
     </section>

@@ -73,6 +73,22 @@ export class PdfView {
     const byHand = () => { if (this.pages.length) this.onUserScroll(); };
     on("wheel", ((e: WheelEvent) => { if (!e.ctrlKey) byHand(); }) as EventListener, { passive: true });
     on("touchmove", byHand, { passive: true });
+    // Two fingers zoom the pages around the point between them (CSS touch-action stops the browser zooming
+    // the whole app instead); one finger keeps scrolling.
+    let pinch: { dist: number; zoom: number } | null = null;
+    const spread = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    on("touchstart", ((e: TouchEvent) => {
+      if (e.touches.length === 2 && this.pages.length) pinch = { dist: spread(e.touches) || 1, zoom: this.zoom };
+    }) as EventListener, { passive: true });
+    on("touchmove", ((e: TouchEvent) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - this.el.getBoundingClientRect().top;
+      this.setZoom(pinch.zoom * (spread(e.touches) / pinch.dist), midY);
+    }) as EventListener, { passive: false });
+    const endPinch = ((e: TouchEvent) => { if (e.touches.length < 2) pinch = null; }) as EventListener;
+    on("touchend", endPinch, { passive: true });
+    on("touchcancel", endPinch, { passive: true });
     on("pointerdown", ((e: PointerEvent) => { if (e.target === this.el) byHand(); }) as EventListener); // scrollbar
     on("keydown", ((e: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) byHand();

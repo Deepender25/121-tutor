@@ -43,6 +43,8 @@ export class LiveClient {
   private recorder: AudioWorkletNode | null = null;
   private micLevel = 0;
   private sources = new Set<AudioBufferSourceNode>();
+  private bus: GainNode | null = null; // the current reply's audio, faded out (not cut) when interrupted
+  private carry: Uint8Array | null = null; // odd trailing byte of a chunk: the next chunk's first sample half
   private nextTime = 0;
   private pendingText: string[] = [];
   private raf: number | null = null;
@@ -244,14 +246,32 @@ export class LiveClient {
 
   private play(arrayBuffer: ArrayBuffer) {
     if (!this.ctx || !this.gain) return;
-    const pcm = new Int16Array(arrayBuffer);
-    if (!pcm.length) return;
+    // PCM16 samples are 2 bytes. A chunk with an odd length would shift every later sample by one byte,
+    // which plays as loud noise, so a stray byte is held for the next chunk instead.
+    let bytes = new Uint8Array(arrayBuffer);
+    if (this.carry) {
+      const joined = new Uint8Array(this.carry.length + bytes.length);
+      joined.set(this.carry);
+      joined.set(bytes, this.carry.length);
+      bytes = joined;
+      this.carry = null;
+    }
+    if (bytes.length % 2) {
+      this.carry = bytes.slice(bytes.length - 1);
+      bytes = bytes.subarray(0, bytes.length - 1);
+    }
+    if (!bytes.length) return;
+    const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.length / 2);
     const buffer = this.ctx.createBuffer(1, pcm.length, OUTPUT_RATE);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < pcm.length; i++) data[i] = pcm[i] / 0x8000;
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;
-    src.connect(this.gain);
+    if (!this.bus) {
+      this.bus = this.ctx.createGain();
+      this.bus.connect(this.gain);
+    }
+    src.connect(this.bus);
     const now = this.ctx.currentTime;
     // Small jitter buffer when starting from silence; back-to-back otherwise (gapless).
     if (this.nextTime < now) this.nextTime = now + 0.06;
@@ -266,11 +286,26 @@ export class LiveClient {
     if (wasSpeaking) this.h.onState?.(this.state);
   }
 
+  // Stop the reply (interrupted, or the session ended). Cutting a waveform mid-cycle clicks, and repeated
+  // interruptions turn that into chirps, so the reply fades out over 40 ms and is stopped just after.
   flushAudio() {
-    for (const src of this.sources) {
-      try { src.onended = null; src.stop(); } catch { /* already stopped */ }
+    const ctx = this.ctx;
+    const bus = this.bus;
+    this.bus = null;
+    const stopAt = ctx ? ctx.currentTime + 0.05 : 0;
+    if (ctx && bus && ctx.state === "running") {
+      const t = ctx.currentTime;
+      bus.gain.cancelScheduledValues(t);
+      bus.gain.setValueAtTime(bus.gain.value, t);
+      bus.gain.linearRampToValueAtTime(0, t + 0.04);
     }
+    for (const src of this.sources) {
+      src.onended = null;
+      try { if (ctx && ctx.state === "running") src.stop(stopAt); else src.stop(); } catch { /* already stopped */ }
+    }
+    if (bus) setTimeout(() => { try { bus.disconnect(); } catch { /* closed with the context */ } }, 120);
     this.sources.clear();
+    this.carry = null;
     this.nextTime = 0;
     this.h.onState?.(this.state);
   }

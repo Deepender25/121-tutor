@@ -6,14 +6,15 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { greeting, timeAgo } from "@/lib/format";
 import type { NotebookSummary } from "@/lib/types";
-import { Icon, Mark, NotebookIcon, Ring } from "../Icon";
+import { Icon, Mark, NotebookIcon } from "../Icon";
 import { confirmDialog, openMenu, promptDialog, toast, useHydrated } from "../overlays";
 import { openSettings, StatusPill } from "../Settings";
 
 function stats(nb: NotebookSummary) {
   const pages = nb.sources.reduce((n, s) => n + (s.pages || 0), 0);
-  const covered = nb.sources.length ? Math.round(nb.sources.reduce((n, s) => n + (s.covered || 0), 0) / nb.sources.length) : 0;
-  return { pages, covered };
+  const active = nb.sources.find((s) => s.doc_id === nb.active_source) || nb.sources[0];
+  const at = active?.position?.started ? `At p. ${active.position.pages}` : "Not started";
+  return { pages, at };
 }
 
 const href = (nb: NotebookSummary) => `/notebooks/${nb.id}`;
@@ -63,7 +64,7 @@ export function HomeView({ initialNotebooks }: { initialNotebooks: NotebookSumma
   );
 
   const card = (nb: NotebookSummary) => {
-    const { pages, covered } = stats(nb);
+    const { pages, at } = stats(nb);
     return (
       <article key={nb.id} className="nb-card" role="link" tabIndex={0}
         onClick={() => open(nb)} onKeyDown={(e) => { if (e.key === "Enter") open(nb); }}>
@@ -77,7 +78,7 @@ export function HomeView({ initialNotebooks }: { initialNotebooks: NotebookSumma
         </div>
         <div className="card-foot">
           {nb.sources.length
-            ? <span className="progress"><Ring percent={covered} size={20} stroke={2.5} />{`${covered}% covered`}</span>
+            ? <span className="progress"><Icon name="book" className="sm" />{at}</span>
             : <span className="progress muted">Add a PDF to start</span>}
           <span className="when">{hydrated ? timeAgo(nb.updated_at) : ""}</span>
         </div>
@@ -93,7 +94,6 @@ export function HomeView({ initialNotebooks }: { initialNotebooks: NotebookSumma
   let continueCard = null;
   if (recent) {
     const active = recent.sources.find((s) => s.doc_id === recent.active_source) || recent.sources[0];
-    const { covered } = stats(recent);
     const where = active?.position?.started ? `${active.position.section} · p. ${active.position.pages}` : `Not started · ${active?.title || ""}`;
     continueCard = (
       <section className="continue" onClick={() => open(recent)} role="link" tabIndex={0}
@@ -104,7 +104,6 @@ export function HomeView({ initialNotebooks }: { initialNotebooks: NotebookSumma
           <h2>{recent.name}</h2>
           <p>{where}</p>
         </div>
-        <div className="continue-progress"><Ring percent={covered} size={46} stroke={3.5} /><span>{`${covered}%`}<small>covered</small></span></div>
         <button className="btn primary" onClick={(e) => { e.stopPropagation(); open(recent); }}>Resume<Icon name="arrowRight" className="sm" /></button>
       </section>
     );
