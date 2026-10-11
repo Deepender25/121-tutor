@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Everyday commands for the Voice Tutor API on this server. Installed to /usr/local/bin/voice-tutor by setup.sh.
+#
+#   sudo voice-tutor status                  is it running and healthy?
+#   sudo voice-tutor logs                    follow the API's log
+#   sudo voice-tutor restart                 after editing /etc/voice-tutor/api.env
+#   sudo voice-tutor update                  pull the latest code from GitHub and restart
+#   sudo voice-tutor backup                  back up now (also runs nightly; keeps the newest 7)
+#   sudo voice-tutor user create <email>     the login account (also: user password|show|delete, sessions end-all)
+#   sudo voice-tutor data info|prune         what's stored; remove leftovers (stops and restarts the API)
+set -euo pipefail
+
+APP=/opt/voice-tutor/app
+VENV=/opt/voice-tutor/venv
+ENV_FILE=/etc/voice-tutor/api.env
+BACKUPS=/var/backups/voice-tutor
+KEEP_BACKUPS=7
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run it with sudo: sudo voice-tutor ${*:-status}"
+  exit 1
+fi
+
+# manage.py as the service user, with the service's settings (so files keep the right owner).
+manage() {
+  # A clean environment with only the service's settings (the file is readable by the voicetutor group).
+  runuser -u voicetutor -- env -i HOME=/var/lib/voice-tutor LANG=C.UTF-8 PATH=/usr/bin:/bin \
+    VENV_PY="$VENV/bin/python" APP_DIR="$APP" SETTINGS="$ENV_FILE" \
+    bash -c 'set -a; . "$SETTINGS"; set +a; cd "$APP_DIR"; exec "$VENV_PY" manage.py "$@"' manage "$@"
+}
+
+case "${1:-status}" in
+  status)
+    systemctl --no-pager status voice-tutor-api caddy | grep -E "●|Active:" || true
+    if curl -fsS --max-time 5 http://127.0.0.1:8766/api/health >/dev/null; then
+      echo "API health: OK"
+    else
+      echo "API health: NOT RESPONDING (sudo voice-tutor logs)"
+    fi
+    ;;
+  logs)
+    journalctl -u voice-tutor-api -n 100 -f
+    ;;
+  restart)
+    systemctl restart voice-tutor-api
+    echo "Restarted."
+    ;;
+  update)
+    exec bash "$APP/deploy/vps/update.sh"
+    ;;
+  backup)
+    mkdir -p "$BACKUPS" && chown voicetutor:voicetutor "$BACKUPS" && chmod 700 "$BACKUPS"
+    manage data backup "$BACKUPS/voice-tutor-$(date +%Y-%m-%d-%H%M).tar.gz"
+    ls -1t "$BACKUPS"/voice-tutor-*.tar.gz 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f
+    ;;
+  data)
+    if [ "${2:-}" = "prune" ]; then  # leftovers are only safe to judge with the API stopped
+      systemctl stop voice-tutor-api
+      trap 'systemctl start voice-tutor-api' EXIT
+    fi
+    manage "$@"
+    ;;
+  user|sessions)
+    manage "$@"
+    ;;
+  *)
+    sed -n '2,12p' "$0"
+    exit 2
+    ;;
+esac

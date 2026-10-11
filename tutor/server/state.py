@@ -24,6 +24,8 @@ class AppState:
         self.jobs = JobQueue()
         self._settings_lock = threading.RLock()  # re-entrant: a nested call can never deadlock
         self._reindex_lock = threading.Lock()
+        self.auth = None  # AuthStore when VOICE_TUTOR_AUTH=on
+        self.live_sessions = 0
 
     def load_embedder(self) -> None:
         started = time.perf_counter()
@@ -103,11 +105,24 @@ class AppState:
             folder.mkdir(parents=True, exist_ok=True)
         for leftover in config.FILES_DIR.glob("upload-*.part"):  # interrupted uploads
             leftover.unlink(missing_ok=True)
+        if config.AUTH_ENABLED:
+            from tutor.auth import AuthStore
+
+            self.auth = AuthStore(config.AUTH_DB)
+            purged = self.auth.purge_expired()
+            accounts = self.auth.users()
+            if not accounts:
+                log.warning("Login is on but there's no account yet. Create it with: python manage.py user create <email>")
+            else:
+                log.info("Login is on (account: %s)%s", accounts[0].email,
+                         f"; removed {purged} expired session(s)" if purged else "")
         threading.Thread(target=self.load_embedder, name="embedder-load", daemon=True).start()
 
     def stop(self) -> None:
         if self.embedder is not None and hasattr(self.embedder, "close"):
             self.embedder.close()
+        if self.auth is not None:
+            self.auth.close()
 
     def require_embedder(self, timeout: float = 180):
         if not self.embedder_ready.wait(timeout):

@@ -3,6 +3,7 @@
 // floating tutor. Rendering only: behaviour lives in the controller (controller.ts).
 import Link from "next/link";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
 import { clockTime, dayLabel } from "@/lib/format";
 import { statusStore } from "@/lib/status";
 import { useStore } from "@/lib/store";
@@ -515,7 +516,7 @@ const ViewerPanel = memo(function ViewerPanel({ ctl }: { ctl: Ctl }) {
   const editing = useRef(false);
   useEffect(() => { if (!editing.current) setPageText(v.docId && v.page ? String(v.page) : ""); }, [v.docId, v.page]);
 
-  const openHref = v.docId && v.page ? `/api/docs/${v.docId}/file#page=${v.page}` : undefined;
+  const openHref = v.docId && v.page ? `${api.fileUrl(v.docId)}#page=${v.page}` : undefined;
   return (
     <section className="panel viewer" aria-label="Page viewer" ref={ctl.ref("viewerPanel")}
       onPointerMove={ctl.viewerPointer} onPointerDown={ctl.viewerPointer}>

@@ -505,3 +505,64 @@ online (ready in 3.2 s, no model loaded); the server re-embedded its 11 chunks i
 64%, search returned the same top results; a new upload online was indexed in the online space only. The real
 library (offline) opened unchanged with no re-indexing.
 
+## 26. Hosting: frontend on Vercel, API on a VPS, with login (2026-10-11)
+
+One codebase; hosting is switched on by settings only, and `run.bat` behaves exactly as before.
+
+**How they talk.** The browser loads pages from Vercel (`tutor.edgedrop.app`, functions pinned to Mumbai with
+`frontend/vercel.json`) and calls the API directly at `api.tutor.edgedrop.app` (Caddy :443 on the VPS, the API on
+127.0.0.1:8766): REST with `credentials: "include"`, PDF uploads, page images, and the voice WebSocket. So none of
+it is subject to Vercel's 4.5 MB request or 5-minute connection limits. `NEXT_PUBLIC_API_URL` (build time) is the
+only frontend setting (`lib/api.ts`: `apiUrl`, `apiWsUrl`); unset, everything is same-origin `/api` through the
+Next.js rewrite as before. Server-rendered pages fetch from `VOICE_TUTOR_API_URL` (default: the same) forwarding
+the visitor's cookies, and redirect to `/login` on 401.
+
+**Login** (`tutor/auth.py`, `tutor/server/auth_routes.py`, `VOICE_TUTOR_AUTH=on`). One email + password account,
+created on the server (`manage.py user create`); no sign-up page; resets by command. Argon2id (19 MiB, t=2, p=1:
+OWASP's minimum, light enough for 1 GB), rehash-on-login. Sessions: 256-bit random tokens, only their SHA-256 in
+SQLite (WAL); 30 days idle / 90 days absolute; logout, sign-out-everywhere and password changes end sessions.
+Unknown email and wrong password give the same message and cost the same work (a dummy hash). Failures are
+throttled per email (5 / 15 min) and per IP (20 / 15 min) and logged with the IP. The cookie is HttpOnly, Secure,
+SameSite=Lax, `Domain=tutor.edgedrop.app` (so `api.tutor.` gets it and the rest of `edgedrop.app` doesn't), named
+`__Secure-vt_session`, Max-Age 90 days with the idle limit enforced server-side.
+
+**Request security** (`tutor/server/security.py`, one ASGI layer for HTTP and WebSocket):
+- Origin check, always on (locally too): POST/PUT/PATCH/DELETE and WebSockets from a site that isn't the local UI
+  or a configured frontend get 403. This also stops CSRF against the login-free local app.
+- Every `/api` route needs a session except health and the sign-in endpoints; the WebSocket is checked before it's
+  accepted. CORS: Starlette's middleware with the allowed origins read per request (`ConfiguredCORS`), credentials
+  on, no wildcard; 401s are labelled too, so the browser can see them.
+- nosniff, DENY framing, strict referrer, `no-store` on sign-in responses; at most `VOICE_TUTOR_MAX_LIVE_SESSIONS`
+  voice sessions; upload cap `VOICE_TUTOR_MAX_UPLOAD_MB`.
+- Fail closed: the API won't start without login if it's reachable by others (public origins set, or bound to a
+  non-loopback address); an unrecognised `VOICE_TUTOR_AUTH` value means login on.
+
+**Frontend security.** `src/proxy.ts` (Next 16's middleware) sets a per-request CSP with a nonce: scripts only from
+self + nonce (no `'strict-dynamic'`, which would stop `'self'` covering the mic's audio worklet), connections only
+to self and the API, images and media from self and the API, `frame-ancestors 'none'`, no objects. Styles need
+`'unsafe-inline'` (React style attributes); a style nonce would cancel it, so none. The theme script carries the
+nonce (the layout reads `x-nonce`). Static headers: nosniff, DENY, referrer policy, Permissions-Policy (microphone
+self only), HSTS when hosted. The session cookie is HttpOnly, so even injected script couldn't read it.
+
+**Server** (`deploy/vps/`). `setup.sh` (idempotent): 2 GB swap, Python 3.13 via uv, the server-only dependencies
+(`requirements-server.txt`: no torch, 747 MB venv vs 1.7 GB, versions from `requirements.lock`), a `voicetutor`
+system user, a systemd unit (MemoryHigh 650M / MemoryMax 800M; ProtectSystem=strict, writes only to
+`/var/lib/voice-tutor` and `/var/log/voice-tutor`, no capabilities, no new privileges), Caddy with automatic
+certificates (Cloudflare record grey-clouded: its free certificate doesn't cover two-level names), iptables rules
+for 80/443 saved with netfilter-persistent (Oracle's image rejects everything but SSH; the VCN security list must be
+opened too), and a nightly backup timer. `voice-tutor` wraps status/logs/restart/update/backup and `manage.py`
+(run as the service user with the service's settings). `VOICE_TUTOR_LOGS` moves logs off the read-only code tree.
+
+**Data** (`manage.py`). `data info`; `data prune` removes PDFs no notebook uses, unfinished uploads and temp files
+(refuses while the API runs; `voice-tutor data prune` stops and restarts it); `data backup` writes a tar.gz without
+caches, with the login database copied through SQLite's backup API so it's consistent while the server runs.
+
+**Verified.** 25 security tests (account rules, hashing on disk, enumeration, expiry, throttling, login-required
+routes, origins, CORS, the WebSocket, headers, cookie scope, fail-closed startup, local mode unchanged) and 4 for
+`manage.py`; 115 tests in all. The server-only install was built and tested on Linux (WSL, Python 3.13.11):
+98 tests pass without torch. Live, on this PC: the local app (headers, CSP with the worklet, theme script, PDF
+pages, a voice reply) unchanged; and the hosted setup simulated with `tutor.localhost` + `api.tutor.localhost`
+(the frontend built as Vercel builds it): signed-out redirect, wrong-password message, sign-in, the cookie shared
+across both hosts and invisible to scripts, page images and the voice WebSocket across origins, an online-embedding
+search answer, sign-out and sign-out-everywhere, return-to-page after sign-in, and `next=//evil.example` refused.
+

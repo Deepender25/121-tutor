@@ -992,3 +992,14 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---- sign-in (hosted: the server has VOICE_TUTOR_AUTH=on) ---- */
+.auth-page { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; }
+.auth-card { width: min(400px, 100%); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); padding: 28px; animation: pop .25s var(--ease-spring); }
+.auth-brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 15.5px; letter-spacing: -.015em; margin-bottom: 22px; color: var(--ink); }
+.auth-card h1 { font-family: var(--font-display); font-weight: 500; font-size: 28px; letter-spacing: -.02em; margin: 0 0 6px; }
+.auth-sub { color: var(--muted); margin: 0 0 18px; font-size: 14px; }
+.auth-card .banner { margin-bottom: 8px; }
+.auth-label { font-size: 13px; font-weight: 550; margin: 12px 0 6px; }
+.auth-submit { margin-top: 22px; width: 100%; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 8px; }

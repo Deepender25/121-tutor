@@ -1,0 +1,19 @@
+# The API server for hosting (EMBEDDING_MODEL=online): everything except the local embedding model's stack
+# (torch, torchvision, sentence-transformers, transformers), about 1.5 GB less to download and store.
+# Installed with the tested versions from requirements.lock as constraints:
+#   uv pip install -r deploy/vps/requirements-server.txt -c requirements.lock
+lancedb
+pandas
+pymupdf4llm
+google-genai
+tokenizers
+huggingface_hub
+ddgs
+httpx
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+argon2-cffi
+numpy
+python-dotenv

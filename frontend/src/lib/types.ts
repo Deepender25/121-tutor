@@ -103,6 +103,7 @@ export interface Status {
   embedder_error: string | null;
   embedding_mode: "offline" | "online"; // EMBEDDING_MODEL in .env
   embedding_model: string;
+  auth: "on" | "off"; // VOICE_TUTOR_AUTH: sign-in required (hosted)
   gemini_key: boolean;
   live_model: string;
   web_provider: "tavily" | "duckduckgo" | string;
@@ -110,6 +111,8 @@ export interface Status {
   log_file: string;
   voice: string;
 }
+
+export type Account = { auth: "off" } | { auth: "on"; email: string };
 
 export interface Located {
   page: number | null;

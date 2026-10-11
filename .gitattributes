@@ -1,2 +1,5 @@
 *.bat text eol=crlf
 *.pdf binary
+# Scripts and server config run on Linux: always Unix line endings, whatever the committing machine uses.
+*.sh text eol=lf
+deploy/vps/** text eol=lf

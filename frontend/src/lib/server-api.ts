@@ -1,21 +1,30 @@
 // Server-side data loading for server-rendered pages. Talks to the Python API directly (not through
-// the /api rewrite). Never imported by client components.
+// the /api rewrite): locally on 127.0.0.1, hosted at VOICE_TUTOR_API_URL (default: NEXT_PUBLIC_API_URL).
+// The visitor's cookies are passed along so the API sees their session. Never imported by client components.
+import { headers } from "next/headers";
 import { connection } from "next/server";
 import { cache } from "react";
 import type { Notebook, NotebookSummary } from "./types";
 
-const API = `http://${process.env.VOICE_TUTOR_HOST || "127.0.0.1"}:${process.env.VOICE_TUTOR_API_PORT || "8766"}`;
+const API = (process.env.VOICE_TUTOR_API_URL || process.env.NEXT_PUBLIC_API_URL
+  || `http://${process.env.VOICE_TUTOR_HOST || "127.0.0.1"}:${process.env.VOICE_TUTOR_API_PORT || "8766"}`).replace(/\/+$/, "");
 
-export type Loaded<T> = { kind: "ok"; data: T } | { kind: "missing" } | { kind: "offline" };
+export type Loaded<T> = { kind: "ok"; data: T } | { kind: "missing" } | { kind: "offline" } | { kind: "signin" };
 
 async function load<T>(path: string): Promise<Loaded<T>> {
   await connection(); // always render per request: notebooks change all the time
+  const cookie = (await headers()).get("cookie");
   let res: Response;
   try {
-    res = await fetch(`${API}${path}`, { cache: "no-store", signal: AbortSignal.timeout(15000) });
+    res = await fetch(`${API}${path}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(15000),
+      headers: cookie ? { cookie } : {},
+    });
   } catch {
     return { kind: "offline" };
   }
+  if (res.status === 401) return { kind: "signin" };
   if (res.status === 404) return { kind: "missing" };
   if (!res.ok) return { kind: "offline" };
   return { kind: "ok", data: (await res.json()) as T };

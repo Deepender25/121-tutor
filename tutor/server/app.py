@@ -1,5 +1,6 @@
 """FastAPI app: REST API for notebooks/sources/pages and the live voice WebSocket. The UI is a separate
-Next.js server (frontend/, ui.py) that forwards /api here."""
+Next.js server (frontend/, ui.py) that forwards /api here locally; when hosted, the browser calls this API
+directly from the frontend's site (CORS), behind the login and origin checks in security.py."""
 
 import asyncio
 import logging
@@ -17,9 +18,10 @@ from tutor import config, web
 from tutor.lesson import LessonError
 from tutor.library import DocumentError, delete_document, doc_id_for, ingest, read_meta
 from tutor.notebooks import ICONS as NOTEBOOK_ICONS
-from tutor.server import pages
+from tutor.server import auth_routes, pages
 from tutor.server.jobs import JobQueue, is_pdf
 from tutor.server.live import live_endpoint
+from tutor.server.security import ConfiguredCORS, SecurityMiddleware
 from tutor.server.state import AppState
 from tutor.tools import NotebookTools
 
@@ -32,8 +34,14 @@ _QUIET_GETS = ("/api/health", "/api/status", "/api/jobs/", "/api/docs/")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if problem := config.hosting_error():
+        log.error(problem)
+        raise RuntimeError(problem)
     state.start()
     log.info("Server ready. Data folder: %s", config.DATA_ROOT)
+    if config.PUBLIC_ORIGINS:
+        log.info("Hosted: login %s; accepting browser requests from %s", "on" if config.AUTH_ENABLED else "OFF",
+                 ", ".join(config.PUBLIC_ORIGINS))
     yield
     log.info("Server shutting down")
     state.jobs.shutdown()
@@ -41,6 +49,12 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Voice Tutor", lifespan=lifespan)
+auth_routes.bind(state)
+app.include_router(auth_routes.router)
+# Outermost last: CORS answers preflights and labels every response (401s included); then origin + login checks.
+app.add_middleware(SecurityMiddleware, auth_store_getter=lambda: state.auth)
+app.add_middleware(ConfiguredCORS, allow_credentials=True, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+                   allow_headers=["Content-Type"], max_age=600)
 
 
 @app.middleware("http")
@@ -136,12 +150,13 @@ def status():
         "embedder": embedder,
         "embedder_error": state.embedder_error,
         "embedding_mode": config.EMBEDDING_MODE,
+        "auth": "on" if config.AUTH_ENABLED else "off",
         "embedding_model": config.EMBEDDING_MODEL,
         "gemini_key": state.has_gemini_key(),
         "live_model": config.LIVE_MODEL,
         "web_provider": web.provider(),
         "voices": config.VOICES,
-        "log_file": str(config.PROJECT_ROOT / "logs" / "voice-tutor.log"),
+        "log_file": str(config.LOG_DIR / "voice-tutor.log"),
         **state.settings(),
     }
 
@@ -396,7 +411,17 @@ def doc_file(doc_id: str):
 
 @app.websocket("/api/notebooks/{notebook_id}/live")
 async def live(ws: WebSocket, notebook_id: str):
-    await live_endpoint(ws, notebook_id, state)
+    if state.live_sessions >= config.MAX_LIVE_SESSIONS:  # each one holds a Gemini Live connection (and quota)
+        await ws.accept()
+        await ws.send_json({"type": "error", "fatal": True, "message": f"{state.live_sessions} voice sessions are "
+                            "already open. End one (or close its tab) and try again."})
+        await ws.close()
+        return
+    state.live_sessions += 1
+    try:
+        await live_endpoint(ws, notebook_id, state)
+    finally:
+        state.live_sessions -= 1
 
 
 @app.exception_handler(DocumentError)
@@ -406,5 +431,5 @@ async def document_error(_, exc: DocumentError):
 
 @app.get("/", include_in_schema=False)
 def index() -> RedirectResponse:
-    """This is the API server; the app itself is served by the UI server."""
-    return RedirectResponse(config.UI_URL + "/", status_code=307)
+    """This is the API server; the app itself is served by the UI server (or the hosted frontend)."""
+    return RedirectResponse(config.APP_URL + "/", status_code=307)

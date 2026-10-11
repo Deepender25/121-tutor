@@ -1,0 +1,10 @@
+# Nightly backup of the Voice Tutor data (runs `voice-tutor backup`; keeps the newest 7 in /var/backups/voice-tutor).
+[Unit]
+Description=Voice Tutor backup
+After=voice-tutor-api.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/voice-tutor backup
+Nice=10
+IOSchedulingClass=idle

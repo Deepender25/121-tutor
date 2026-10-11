@@ -67,6 +67,9 @@ def gemini_api_key() -> str:
     return key
 
 
+# Logs: the project's logs/ folder locally; on a server somewhere the service may write (e.g. /var/log/voice-tutor).
+LOG_DIR = Path(os.environ.get("VOICE_TUTOR_LOGS") or PROJECT_ROOT / "logs")
+
 FILES_DIR = DATA_ROOT / "files"  # uploaded PDFs, stored as <doc_id>.pdf
 NOTEBOOKS_DIR = DATA_ROOT / "notebooks"
 SETTINGS_FILE = DATA_ROOT / "settings.json"
@@ -77,7 +80,40 @@ PORT = int(os.environ.get("VOICE_TUTOR_PORT", "8765"))  # UI
 API_PORT = int(os.environ.get("VOICE_TUTOR_API_PORT", "8766"))  # FastAPI (this package)
 UI_URL = f"http://{HOST}:{PORT}"
 API_URL = f"http://{HOST}:{API_PORT}"
-MAX_UPLOAD_MB = 200
+MAX_UPLOAD_MB = int(os.environ.get("VOICE_TUTOR_MAX_UPLOAD_MB", "200"))
+MAX_LIVE_SESSIONS = int(os.environ.get("VOICE_TUTOR_MAX_LIVE_SESSIONS", "3"))  # voice sessions open at once
+
+# ---- Hosting (frontend on Vercel, API on a server). All off by default: locally nothing changes. ----
+# The sites allowed to call this API from a browser (CORS + Origin checks), e.g. https://tutor.edgedrop.app.
+PUBLIC_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("VOICE_TUTOR_PUBLIC_ORIGINS", "").split(",")
+                  if o.strip()]
+# Login (one email + password account, created with `python manage.py user create`). Required when hosted.
+AUTH_ENABLED, AUTH_SETTING_ERROR = {"on": (True, None), "off": (False, None), "": (False, None)}.get(
+    os.environ.get("VOICE_TUTOR_AUTH", "").strip().lower(),
+    (True, "VOICE_TUTOR_AUTH must be 'on' or 'off'. Fix it in .env."))  # a typo fails closed: login stays on
+# The session cookie is shared by the frontend and the API host: set it to the frontend's host
+# (tutor.edgedrop.app also covers api.tutor.edgedrop.app). Empty = this host only (local use).
+COOKIE_DOMAIN = os.environ.get("VOICE_TUTOR_COOKIE_DOMAIN", "").strip() or None
+COOKIE_SECURE = os.environ.get("VOICE_TUTOR_COOKIE_SECURE", "on" if PUBLIC_ORIGINS else "off").strip().lower() == "on"
+SESSION_COOKIE = "__Secure-vt_session" if COOKIE_SECURE else "vt_session"
+AUTH_DB = DATA_ROOT / "auth.sqlite3"
+# Where "/" on the API sends a browser: the hosted frontend, or the local UI.
+APP_URL = PUBLIC_ORIGINS[0] if PUBLIC_ORIGINS else UI_URL
+
+
+def is_loopback(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
+
+
+def hosting_error() -> str | None:
+    """Refuse to serve without login when the API can be reached by others."""
+    if AUTH_SETTING_ERROR:
+        return AUTH_SETTING_ERROR
+    if not AUTH_ENABLED and (PUBLIC_ORIGINS or not is_loopback(HOST)):
+        return ("Login is off but this API is reachable from other computers "
+                f"({'VOICE_TUTOR_PUBLIC_ORIGINS is set' if PUBLIC_ORIGINS else f'VOICE_TUTOR_HOST={HOST}'}). "
+                "Set VOICE_TUTOR_AUTH=on and create the account with: python manage.py user create <email>")
+    return None
 VOICES = ["Kore", "Puck", "Charon", "Zephyr", "Fenrir", "Leda", "Orus", "Aoede"]
 DEFAULT_VOICE = "Kore"
 LIVE_IDLE_TIMEOUT_S = 300  # close an idle Gemini session to save free-tier quota

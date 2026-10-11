@@ -23,6 +23,7 @@ httpx
 
 # Web app
 fastapi>=0.143
+argon2-cffi>=25.1           # password hashing for the hosted login (VOICE_TUTOR_AUTH=on)
 uvicorn[standard]>=0.54
 python-multipart            # file uploads
 websockets

@@ -46,6 +46,12 @@ Pages have real addresses: `http://127.0.0.1:8765/` (your notebooks) and
 `http://127.0.0.1:8765/notebooks/<id>` (one notebook), so the browser's Back/Forward buttons, bookmarks
 and new tabs all work.
 
+### Hosting it online (optional)
+
+The same code can also run as a website you sign in to from anywhere: the interface on Vercel and the Python API
+on your own server (an Oracle Cloud VM, for example), with one email + password account, HTTPS, and online
+embeddings. Everything for that is in [`deploy/`](deploy/README.md); nothing about the local setup changes.
+
 ## Logs
 
 | File | What |
@@ -118,6 +124,7 @@ python -m pytest -q               # tests
 python ingest.py file.pdf         # index a PDF from the command line
 python query.py "question"        # debug retrieval
 python console.py                 # text console over one document (debugging)
+python manage.py data info        # what's stored; also: data prune, data backup <file>, user ... (hosted login)
 ```
 
 Recreate the venv from scratch: delete the `.venv` folder and run `run.bat`. The same goes for the UI:
@@ -128,4 +135,7 @@ delete `frontend\node_modules` and `frontend\.next`. Ports can be changed in `.e
 
 PDF parsing, indexing and search run on your computer. The voice model is Gemini Live: what you say and
 the passages it reads are sent to Google, and on the free tier Google may use them to improve its
-products.
+products. With `EMBEDDING_MODEL=online`, your PDFs' text is also sent to Google to be indexed.
+
+Even locally, the API refuses requests that change anything when they come from another website (so a page you
+visit can't drive the app behind your back), and the pages carry a strict Content Security Policy.

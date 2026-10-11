@@ -15,7 +15,7 @@ import sys
 
 from tutor import config
 
-LOG_DIR = config.PROJECT_ROOT / "logs"
+LOG_DIR = config.LOG_DIR
 MAIN_LOG = LOG_DIR / "voice-tutor.log"
 ERROR_LOG = LOG_DIR / "errors.log"
 UI_LOG = LOG_DIR / "ui.log"

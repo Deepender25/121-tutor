@@ -1,0 +1,48 @@
+# The Voice Tutor API (FastAPI on 127.0.0.1:8766, behind Caddy). Installed by setup.sh to
+# /etc/systemd/system/. Logs: journalctl -u voice-tutor-api, and /var/log/voice-tutor/.
+[Unit]
+Description=Voice Tutor API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=voicetutor
+Group=voicetutor
+WorkingDirectory=/opt/voice-tutor/app
+EnvironmentFile=/etc/voice-tutor/api.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/voice-tutor/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# A 1 GB machine: slow down (swap) above 650 MB, stop the API rather than the whole machine above 800 MB.
+MemoryHigh=650M
+MemoryMax=800M
+
+# Hardening: an unprivileged user that can write only its data and logs.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+ReadWritePaths=/var/lib/voice-tutor /var/log/voice-tutor
+
+[Install]
+WantedBy=multi-user.target

@@ -3,6 +3,7 @@
 //   Gemini -> server -> 24 kHz PCM16 -> scheduled AudioBuffers -> speakers
 // Events from the server (transcripts, tool activity, status) are passed to `onMessage`.
 // The WebSocket goes to this origin's /api, which Next.js proxies to the Python server.
+import { apiWsUrl } from "./api";
 import type { ToolUI } from "./types";
 
 const OUTPUT_RATE = 24000;
@@ -96,8 +97,7 @@ export class LiveClient {
   }
 
   private openSocket() {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/api/notebooks/${this.notebookId}/live`);
+    const ws = new WebSocket(apiWsUrl(`/api/notebooks/${this.notebookId}/live`));
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {

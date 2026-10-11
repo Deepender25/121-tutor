@@ -1,0 +1,28 @@
+# HTTPS in front of the Voice Tutor API. setup.sh installs this as /etc/caddy/Caddyfile (with your domain).
+# Caddy gets and renews the Let's Encrypt certificate itself (ports 80 and 443 must be open).
+api.tutor.edgedrop.app {
+	# PDF uploads (the API checks its own, smaller limit too)
+	request_body {
+		max_size 210MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		-Server
+	}
+
+	# REST + the voice WebSocket (Caddy upgrades WebSockets on its own). Long timeouts for big uploads.
+	reverse_proxy 127.0.0.1:8766 {
+		transport http {
+			read_timeout 15m
+			write_timeout 15m
+		}
+	}
+
+	log {
+		output file /var/log/caddy/voice-tutor-api.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

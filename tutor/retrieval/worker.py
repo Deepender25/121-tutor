@@ -27,7 +27,7 @@ from tutor import config
 from tutor.retrieval.embedder import DOCUMENT_PROMPT, QUERY_PROMPT
 
 log = logging.getLogger("embedder")
-CRASH_LOG = config.PROJECT_ROOT / "logs" / "embedder-crash.log"
+CRASH_LOG = config.LOG_DIR / "embedder-crash.log"
 
 # Safe mode: no AVX2/AVX-512 kernels (ATen, oneDNN, MKL), oneDNN off, at most 4 threads.
 SAFE_ENV = {

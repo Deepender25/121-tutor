@@ -7,7 +7,7 @@ import { useStore } from "@/lib/store";
 import { getTheme, setTheme, type Theme } from "@/lib/theme";
 import type { Status } from "@/lib/types";
 import { Icon } from "./Icon";
-import { sheet, toast } from "./overlays";
+import { confirmDialog, sheet, toast } from "./overlays";
 
 const VOICE_NOTES: Record<string, string> = {
   Kore: "Firm and clear", Puck: "Upbeat and lively", Charon: "Calm and informative", Zephyr: "Bright and friendly",
@@ -36,7 +36,7 @@ async function playPreview(voice: string) {
   preview.voice = voice;
   preview.loading = voice;
   notifyPreview();
-  const audio = new Audio(`/api/voices/${voice}/preview`);
+  const audio = new Audio(api.voicePreviewUrl(voice));
   preview.audio = audio;
   audio.addEventListener("ended", () => { if (preview.audio === audio) stopPreview(); });
   audio.addEventListener("error", () => {
@@ -101,7 +101,9 @@ function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
   return (
     <>
       <div className="sheet-head">
-        <div><h2>Settings</h2><p>Everything runs on this computer except the voice model.</p></div>
+        <div><h2>Settings</h2><p>{s?.auth === "on"
+          ? "Your notebooks live on your own server; voice runs on Gemini."
+          : "Everything runs on this computer except the voice model."}</p></div>
         <button className="icon-btn" aria-label="Close settings" onClick={() => close()}><Icon name="x" /></button>
       </div>
       <div className="sheet-body scroll">
@@ -121,6 +123,8 @@ function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
         </Section>
 
         <Section title="Appearance"><ThemeSwitch /></Section>
+
+        {s?.auth === "on" ? <AccountSection /> : null}
 
         <Section title="System"><StatusList s={s} /></Section>
 
@@ -159,6 +163,27 @@ function VoiceCard({ voice, selected, onChoose }: { voice: string; selected: boo
       <span className="vtext"><b>{voice}</b><small>{VOICE_NOTES[voice] || ""}</small></span>
       <span className="vcheck"><Icon name="check" className="sm" /></span>
     </div>
+  );
+}
+
+// Hosted (sign-in on): who's signed in, sign out here or on every device.
+function AccountSection() {
+  const [email, setEmail] = useState<string | null>(null);
+  useEffect(() => {
+    api.me().then((me) => setEmail(me.auth === "on" ? me.email : null)).catch(() => setEmail(null));
+  }, []);
+  const signOut = async (everywhere: boolean) => {
+    if (everywhere && !(await confirmDialog({ title: "Sign out everywhere?", body: "Every browser signed in to this account, including this one, will need to sign in again.", confirm: "Sign out everywhere", danger: false }))) return;
+    try { await (everywhere ? api.logoutAll() : api.logout()); } catch { /* signed out either way */ }
+    location.assign("/login");
+  };
+  return (
+    <Section title="Account" hint={email ? `Signed in as ${email}` : undefined}>
+      <div className="account-actions">
+        <button className="btn" onClick={() => signOut(false)}><Icon name="logout" className="sm" />Sign out</button>
+        <button className="btn ghost" onClick={() => signOut(true)}>Sign out everywhere</button>
+      </div>
+    </Section>
   );
 }
 
