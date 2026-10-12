@@ -145,9 +145,12 @@ def ingest(
     progress: ProgressFn | None = None,
     display_name: str | None = None,
     remember_current: bool = True,
+    isolated_parse: bool = False,
 ) -> IngestResult:
     """Index a PDF. No-op if already indexed with the current settings; adds the current embedding space to a
-    document indexed in another one; parses it again if the chunking settings changed."""
+    document indexed in another one; parses it again if the chunking settings changed.
+    isolated_parse: read the PDF in a short-lived child process (tutor/ingest/isolated.py), for the long-running
+    server, which would otherwise keep the memory the layout models take."""
     pdf = pdf.resolve()
     doc_id = doc_id_for(pdf)
     folder = config.doc_dir(doc_id)
@@ -165,7 +168,12 @@ def ingest(
 
     report("parsing", 0, 1)
     log(f"Parsing {display_name or pdf.name} ...")
-    parsed = parse_pdf(pdf, config.FALLBACK_SECTION_PAGES)
+    if isolated_parse:
+        from tutor.ingest.isolated import parse_pdf_isolated
+
+        parsed = parse_pdf_isolated(pdf, config.FALLBACK_SECTION_PAGES)
+    else:
+        parsed = parse_pdf(pdf, config.FALLBACK_SECTION_PAGES)
     title = _choose_title(parsed.title if parsed.title != pdf.stem else "", display_name, pdf.stem)
     log(f"  {parsed.page_count} pages, {len(parsed.sections)} sections (structure from {parsed.structure_source})")
 

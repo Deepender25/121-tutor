@@ -309,7 +309,7 @@ def _ingest_work(notebook_id: str, pdf: Path, display_name: str):
     def work(job) -> None:
         embedder = state.require_embedder(timeout=600)
         result = ingest(pdf, embedder, progress=lambda s, d, t: JobQueue.report(job, s, d, t),
-                        display_name=display_name, remember_current=False, log=log.debug)
+                        display_name=display_name, remember_current=False, log=log.debug, isolated_parse=True)
         job.doc_id, job.title = result.doc_id, result.title
         if state.cache:
             state.cache.drop(result.doc_id)  # re-open with the fresh index

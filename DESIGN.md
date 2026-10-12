@@ -599,7 +599,10 @@ PCM16 sample (loud noise). Fixes: Gemini's start-of-speech sensitivity is LOW (`
 a clear voice still interrupts, echo and noise don't; interrupted replies fade out over 40 ms on their own gain
 node before stopping; odd trailing bytes are carried into the next chunk. Interruptions are now logged per session
 ("Voice session ended after 2m30s, 4 exchanges, 1 interruption"), so a real phone session shows whether echo still
-cuts in.
+cuts in. It did: one phone-speaker session had 13 interruptions in 2.5 minutes, each "heard" as a one-syllable word
+("bed", "pet", "net", "Bett"), so the tutor kept restarting and the person's real words got lost between them. Gemini
+commits to "the person started talking" after a configurable stretch of speech (`prefix_padding_ms`, never set
+before); it's now 300 ms (`VOICE_TUTOR_VAD_PREFIX_MS`), longer than those bursts and shorter than "wait, wait".
 
 ## 28. The library, dark theme, tooltips and touch (2026-10-11)
 
@@ -645,3 +648,20 @@ and never on touch. Verified: the top-right Settings tooltip shifts left to stay
 browsers and replaced by pressed states (buttons scale, rows tint, books press in); hover-only controls always shown;
 long-press menus on books; no callout or text selection when long-pressing a book.
 
+
+## 29. Reading PDFs in a separate process (2026-10-12)
+
+The API server grew with every PDF it read and never shrank. pymupdf4llm reads a PDF with neural layout models
+(ONNX), and the process that ran them keeps 80-120 MB per document afterwards. Measured on the 1 GB server, one
+process reading three of the notes PDFs: 290 MB loaded, then 410, 488 and 579 MB; `malloc_trim` got back only
+62 MB. The live API had reached ~590 MB (mostly in swap), heading for its 800 MB hard limit, where systemd kills it.
+
+Upload jobs now read the PDF in a short-lived child process (`tutor/ingest/isolated.py`, started with "spawn" like
+the embedding worker) that runs exactly `parse_pdf` and sends the document back; chunking, embedding and saving stay
+in the server. Same measurement with the change: 308 MB loaded, then 218, 214, 214 MB. The documents are identical
+(compared section by section and paragraph by paragraph for the test PDFs and the notes PDFs, on Windows and on the
+server); errors come back as the same exception with the same message. A child that dies (out of memory, a native
+crash) fails that job with an explanation instead of taking the server, and any voice session, down with it; the
+server notices a dead child by checking it's alive, not only by its pipe closing (on Windows a child that dies very
+early never closes it). Cost: a few seconds per PDF to start the child, against 1-3 minutes of reading. The
+command-line tools (`ingest.py`, `console.py`) are short-lived and still read in-process.
