@@ -793,19 +793,6 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pdf-page img { filter: brightness(.93); } }
 .viewer .viewer-empty { flex: 1; }
 .panel.viewer { position: relative; }
-/* shown when you scrolled away while following along: one tap returns to what the tutor is saying */
-.follow-pill {
-  position: absolute; left: 50%; bottom: 62px; z-index: 4; transform: translateX(-50%);
-  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 16px 0 13px; border-radius: 999px;
-  border: 1px solid var(--ink); background: var(--ink); color: var(--on-accent); font-size: 12.5px; font-weight: 600;
-  white-space: nowrap; box-shadow: var(--shadow-lg); animation: pill-in .3s var(--ease-spring);
-  transition: opacity .15s, transform .15s var(--ease);
-}
-.follow-pill:hover { opacity: .9; }
-.follow-pill:active { transform: translateX(-50%) scale(.97); }
-.follow-pill:hover .ic-crosshair { transform: rotate(90deg); }
-@keyframes pill-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translateX(-50%); } }
-.nb.reading .follow-pill { bottom: 86px; }
 .viewer-foot { display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); flex: none; }
 .page-nav { display: inline-flex; align-items: center; gap: 6px; padding: 0 4px; font-variant-numeric: tabular-nums; }
 .page-input {
@@ -813,13 +800,6 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
   background: var(--surface); font-weight: 600; font-size: 13px; outline: none; transition: border-color .15s, box-shadow .15s;
 }
 .page-input:focus { border-color: var(--ink); box-shadow: var(--ring-focus); }
-.viewer-foot .spacer { flex: 1; }
-.follow-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; user-select: none; }
-.switch { position: relative; width: 32px; height: 19px; border-radius: 999px; background: var(--border-strong); transition: background .2s; flex: none; }
-.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: var(--surface); transition: transform .22s var(--ease-spring); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
-.follow-toggle input { display: none; }
-.follow-toggle input:checked + .switch { background: var(--ink); }
-.follow-toggle input:checked + .switch::after { transform: translateX(13px); }
 .viewer-empty { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; color: var(--muted); font-size: 13px; padding: 40px 20px; }
 .viewer-empty b { color: var(--ink-2); font-size: 14px; }
 .empty-ic { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; background: var(--surface); border: 1px solid var(--border); margin-bottom: 8px; color: var(--faint); }
@@ -1057,7 +1037,6 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
   .nb.reading .viewer-head .doc-ic, .nb.reading .viewer-head .doc-name { display: none; }
   .nb.reading .viewer-foot { left: 10px; bottom: 14px; transform: none; }
   .nb.reading.idle .viewer-foot { transform: translateY(10px); }
-  .nb.reading .viewer-foot .follow-toggle { display: none; }
   .nb.reading .float-dock { right: 12px; bottom: 12px; }
   .float-composer { width: calc(100vw - 150px); }
 }

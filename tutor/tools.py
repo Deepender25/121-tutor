@@ -172,7 +172,7 @@ class NotebookTools:
         first_page = int(passage["pages"].split("-")[0])
         ui = {"kind": "passage", "doc_id": doc_id, "page": first_page, "pages": passage["pages"],
               "section": passage["section"], "position": passage["position"],
-              "snippet": passage["text"][:240], "text": passage["text"]}
+              "snippet": passage["text"][:240]}
         return ToolOutcome(result, ui)
 
     def search_sources(self, query: str, source: str | None = None, top_k: int = 5) -> ToolOutcome:
@@ -208,8 +208,7 @@ class NotebookTools:
             results.append({"source": title, "source_number": self._number(h["doc_id"]),
                             "section": h["heading_path"], "pages": pages, "text": h["text"]})
             refs.append({"doc_id": h["doc_id"], "title": title, "page": h["page_start"], "pages": pages,
-                         "section": h["heading_path"], "snippet": " ".join(h["text"].split())[:240],
-                         "text": h["text"]})
+                         "section": h["heading_path"], "snippet": " ".join(h["text"].split())[:240]})
         return ToolOutcome({"results": results, **note}, {"kind": "search", "query": query, "refs": refs})
 
     def web_search(self, query: str) -> ToolOutcome:

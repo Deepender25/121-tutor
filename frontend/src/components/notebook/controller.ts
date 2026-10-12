@@ -1,6 +1,6 @@
 // Notebook controller: everything the notebook page does, outside React. The view components render from
-// `store` and call these actions; long-lived engines (voice session, PDF viewer, voice orbs, follow-along
-// tracker) and DOM measurements live here.
+// `store` and call these actions; long-lived engines (voice session, PDF viewer, voice orbs) and DOM
+// measurements live here.
 //
 //   sources + outline | conversation + voice | PDF viewer, with draggable splits between them, and a
 //   full-screen reading mode where the PDF fills the screen and the tutor becomes a floating orb.
@@ -9,12 +9,11 @@ import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerE
 import { api } from "@/lib/api";
 import { h, iconEl } from "@/lib/dom";
 import { FluidOrb, type OrbState } from "@/lib/fluid-orb";
-import { FollowTracker, type Candidate, type Segment } from "@/lib/follow";
 import { LiveClient, type LiveMessage } from "@/lib/live";
 import { PdfView } from "@/lib/pdf-view";
 import { refreshStatus, statusStore } from "@/lib/status";
 import { createStore } from "@/lib/store";
-import type { HistoryEntry, Job, Notebook, Outline, OutlineSection, SearchRef, ToolUI } from "@/lib/types";
+import type { HistoryEntry, Job, Notebook, Outline, OutlineSection, ToolUI } from "@/lib/types";
 import { confirmDialog, openMenu, toast } from "../overlays";
 import { openSettings } from "../Settings";
 
@@ -112,8 +111,6 @@ export interface NbState {
   view: VoiceView;
   stage: { show: boolean; liveOrb: boolean; label: string; activity: string; caption: string; captionUser: boolean; compact: boolean; tiny: boolean };
   viewer: { docId: string | null; title: string | null; page: number | null; total: number | null; zoom: number };
-  follow: boolean;
-  pill: string | null;
   reading: boolean;
   idle: boolean;
   bubble: { show: boolean; who: "model" | "user" | "hint"; text: string; busy: boolean; actIcon: string; actLabel: string };
@@ -176,8 +173,6 @@ export function createNotebookController(initial: Notebook) {
     view: "transcript",
     stage: { show: false, liveOrb: false, label: "", activity: "", caption: "", captionUser: false, compact: false, tiny: false },
     viewer: { docId: null, title: null, page: null, total: null, zoom: 1 },
-    follow: true,
-    pill: null,
     reading: false,
     idle: false,
     bubble: { show: false, who: "model", text: "", busy: false, actIcon: "sparkles", actLabel: "" },
@@ -199,10 +194,6 @@ export function createNotebookController(initial: Notebook) {
   // ---- mutable session state (not rendered directly)
   const S = {
     viewerDocId: null as string | null,
-    follow: true,
-    followPaused: false, // you scrolled or jumped away while following; resumes on your next question
-    focus: null as { doc_id: string; page: number; rects: number[][] } | null, // the spot the tutor is talking about
-    turnHasTools: false,
     reading: false,
     toolsPending: new Map<string, string>(),
     user: null as { id: number; text: string } | null, // live user bubble
@@ -221,7 +212,6 @@ export function createNotebookController(initial: Notebook) {
   let stageOrb: FluidOrb | null = null;
   let liveOrb: FluidOrb | null = null; // floating above the text bar in transcript mode
   let floatOrb: FluidOrb | null = null;
-  const tracker = new FollowTracker();
   const cleanups: (() => void)[] = [];
 
   // ================================================================ messages
@@ -331,7 +321,6 @@ export function createNotebookController(initial: Notebook) {
     liveOrb?.setState(key);
     floatOrb?.setState(key);
     if (S.reading) paintBubbleHead();
-    paintFollowPill();
   }
 
   function setView(view: VoiceView) {
@@ -439,7 +428,7 @@ export function createNotebookController(initial: Notebook) {
     switch (msg.type) {
       case "transcript":
         if (msg.role === "user") {
-          if (!S.user) { tracker.newTurn(); resumeFollow(false); heardCaption = ""; } // you asked something: follow again
+          if (!S.user) heardCaption = ""; // you asked something: the reply's caption starts fresh
           if (S.model && S.model.text) finalizeModel();
           if (!S.user) S.user = { id: addUser("", true), text: "" };
           S.user.text += msg.text;
@@ -452,13 +441,12 @@ export function createNotebookController(initial: Notebook) {
           m.text = joinText(m.text, msg.text);
           const shown = m.text.trimStart();
           patchMsg(m.id, (x) => ({ ...x, text: shown }));
-          // Captions, the floating bubble and follow-along advance as the words are heard, not when they
-          // arrive (they arrive seconds early, and words cut off by an interruption are never heard at all).
+          // Captions and the floating bubble advance as the words are heard, not when they arrive (they
+          // arrive seconds early, and words cut off by an interruption are never heard at all).
           const piece = msg.text;
           atPlayback(() => {
             heardCaption = joinText(heardCaption, piece);
             caption(heardCaption, "model");
-            hearSpeech(piece);
           });
         }
         scrollToEnd();
@@ -488,20 +476,17 @@ export function createNotebookController(initial: Notebook) {
           }));
         }
         if (msg.ui?.kind === "passage") onPassage(msg.ui);
-        if (msg.ui?.kind === "search" || msg.ui?.kind === "passage") followMaterial(msg.ui);
         if (!S.toolsPending.size) patch("stage", { activity: msg.ui?.kind === "passage" ? `${plain(msg.ui.section)} · p. ${msg.ui.pages}` : "" });
         paintVoice();
         break;
       }
       case "turn_complete":
-        S.turnHasTools = false;
-        atPlayback(() => { clearTimeout(retryTimer); tracker.newTurn(); heardCaption = ""; hideBubbleSoon(); });
+        atPlayback(() => { heardCaption = ""; hideBubbleSoon(); });
         finalizeTurn();
         refreshProgressSoon();
         break;
       case "interrupted":
         cancelPlaybackTimers(); // what was queued will never be heard
-        S.turnHasTools = false;
         if (S.model?.text) patchMsg(S.model.id, (x) => ({ ...x, interrupted: true }));
         finalizeModel();
         break;
@@ -516,8 +501,6 @@ export function createNotebookController(initial: Notebook) {
 
   async function sendText(text: string) {
     if (!text.trim() || !live) return;
-    tracker.newTurn();
-    resumeFollow(false);
     if (!(await ensureReady())) return;
     finalizeTurn();
     addUser(text, false, new Date().toISOString());
@@ -575,7 +558,7 @@ export function createNotebookController(initial: Notebook) {
   }
 
   async function setActive(docId: string) {
-    if (docId === nb.active_source) { pauseFollow(); showPage(docId, currentPageFor(docId)); revealViewer(); return; }
+    if (docId === nb.active_source) { showPage(docId, currentPageFor(docId)); revealViewer(); return; }
     try {
       await api.updateNotebook(id, { active_source: docId });
       setNb({ ...nb, active_source: docId });
@@ -605,7 +588,6 @@ export function createNotebookController(initial: Notebook) {
 
   function teachSection(sec: OutlineSection) {
     if (!nb.active_source) return;
-    resumeFollow(false);
     showPage(nb.active_source, parseInt(sec.pages, 10) || 1);
     const n = nb.sources.findIndex((s) => s.doc_id === nb.active_source) + 1;
     const where = nb.sources.length > 1 ? ` of source ${n}` : "";
@@ -721,8 +703,9 @@ export function createNotebookController(initial: Notebook) {
     patch("viewer", { docId, title });
   }
 
-  // Scroll the viewer to a page of a source (opening that source first if needed) and highlight the
-  // passage being discussed.
+  // Scroll the viewer to a page of a source (opening that source first if needed) and, for a citation,
+  // highlight the cited passage. The page only moves when you ask: a citation, a section, a source, the page
+  // buttons. Never by itself while the tutor talks.
   let showToken = 0;
   async function showPage(docId: string | null, page: number, snippet: string | null = null) {
     if (!docId || !pdf) return;
@@ -746,29 +729,24 @@ export function createNotebookController(initial: Notebook) {
   }
 
   function onPassage(ui: Extract<ToolUI, { kind: "passage" }>) {
-    if (!ui.text && S.follow && !S.followPaused) showPage(ui.doc_id, ui.page, ui.snippet); // older server: no text to follow
     if (ui.doc_id !== nb.active_source) setNb({ ...nb, active_source: ui.doc_id });
     refreshProgressSoon();
   }
 
   function openCitation(docId: string, page: number, snippet: string) {
-    pauseFollow();
     showPage(docId, page, snippet);
     revealViewer();
   }
 
-  function goToPage(n: number) { pauseFollow(); pdf?.goTo(n); }
-  function prevPage() { pauseFollow(); pdf?.prev(); }
-  function nextPage() { pauseFollow(); pdf?.next(); }
+  function goToPage(n: number) { pdf?.goTo(n); }
+  function prevPage() { pdf?.prev(); }
+  function nextPage() { pdf?.next(); }
   function zoomIn() { pdf?.zoomIn(); }
   function zoomOut() { pdf?.zoomOut(); }
   function fitWidth() { pdf?.setZoom(1); }
 
-  // ================================================================ follow along
-  // The page follows what the tutor is *saying*: tool results bring in the passages it's working from, the
-  // tracker (follow.ts) matches its speech to their sentences, and each step is timed to when that audio is
-  // actually heard. Scrolling or jumping yourself pauses following (a pill brings you back); asking
-  // something new resumes it.
+  // ================================================================ timing to what's heard
+  // Reply text arrives seconds before its audio is played; captions wait for the audio.
 
   const playbackTimers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -782,89 +760,6 @@ export function createNotebookController(initial: Notebook) {
   function cancelPlaybackTimers() {
     playbackTimers.forEach(clearTimeout);
     playbackTimers.clear();
-  }
-
-  const lastPage = (pages: string | undefined, first: number) => parseInt(String(pages || "").split("-").pop() || "", 10) || first;
-
-  function followMaterial(ui: Extract<ToolUI, { kind: "search" | "passage" }>) {
-    const cands: Candidate[] = ui.kind === "passage"
-      ? [{ doc_id: ui.doc_id, first: ui.page, last: lastPage(ui.pages, ui.page), text: ui.text, boost: 1.15 }]
-      : (ui.refs || []).map((r: SearchRef) => ({ doc_id: r.doc_id, first: r.page, last: lastPage(r.pages, r.page), text: r.text }));
-    if (!cands.some((c) => c.text)) return;
-    const append = S.turnHasTools; // several lookups in one answer: follow across all of them
-    S.turnHasTools = true;
-    atPlayback(() => {
-      const first = tracker.setCandidates(cands, append);
-      // A passage being taught shows its opening right away. Search hits don't move anything yet: the top
-      // hit is often not the one the answer uses, so the tutor's words decide.
-      if (first >= 0 && ui.kind === "passage") focusSentence(tracker.start(first));
-    });
-  }
-
-  let retryTimer: ReturnType<typeof setTimeout> | undefined;
-  function hearSpeech(piece: string) {
-    focusSentence(tracker.hear(piece));
-    clearTimeout(retryTimer);
-    if (tracker.retryAt) retryTimer = later(() => hearSpeech(""), Math.max(30, tracker.retryAt - performance.now() + 20));
-  }
-
-  let focusToken = 0;
-  async function focusSentence(seg: Segment | null) {
-    if (!seg || !S.follow) return;
-    const token = ++focusToken;
-    let loc;
-    try { loc = await api.locate(seg.doc_id, seg.text, seg.first, seg.last); } catch { return; }
-    if (token !== focusToken || S.disposed || !loc.page) return; // not found on the page: keep the current spot
-    const same = S.focus && S.focus.doc_id === seg.doc_id && S.focus.page === loc.page
-      && JSON.stringify(S.focus.rects) === JSON.stringify(loc.rects);
-    if (same && S.viewerDocId === seg.doc_id) return; // same line (overlapping hits): no flicker
-    S.focus = { doc_id: seg.doc_id, page: loc.page, rects: loc.rects };
-    await showFocus(!S.followPaused);
-    paintFollowPill();
-  }
-
-  // move=false: repaint the highlight where it is without scrolling (following is paused).
-  async function showFocus(move: boolean) {
-    const f = S.focus;
-    if (!f || !pdf) return;
-    const src = nb.sources.find((x) => x.doc_id === f.doc_id);
-    if (!src || src.missing) return;
-    if (f.doc_id !== S.viewerDocId) {
-      if (!move) return;
-      ++showToken;
-      openDoc(f.doc_id, src.title);
-      if (!(await pdf.open(f.doc_id, src.pages || 1)) || S.focus !== f) return;
-    }
-    pdf.highlight(f.page, f.rects, move ? "reveal" : false);
-  }
-
-  function pauseFollow() {
-    if (!S.follow || S.followPaused) return;
-    S.followPaused = true;
-    paintFollowPill();
-  }
-
-  function resumeFollow(jump: boolean) {
-    const was = S.followPaused;
-    S.followPaused = false;
-    paintFollowPill();
-    if (jump || (was && live?.speaking)) showFocus(true);
-  }
-
-  function setFollow(on: boolean) {
-    S.follow = on;
-    S.followPaused = false;
-    store.set({ follow: on });
-    paintFollowPill();
-    if (on) showFocus(true);
-  }
-
-  function paintFollowPill() {
-    const f = S.focus;
-    if (!(S.follow && S.followPaused && f && live?.active)) { store.set({ pill: null }); return; } // only matters mid-conversation
-    const multi = nb.sources.length > 1;
-    const n = nb.sources.findIndex((x) => x.doc_id === f.doc_id) + 1;
-    store.set({ pill: `Back to the tutor · ${multi && n ? `source ${n}, ` : ""}p. ${f.page}` });
   }
 
   // ================================================================ layout: viewer, tabs, splits
@@ -1011,7 +906,7 @@ export function createNotebookController(initial: Notebook) {
       els.floatOrbBtn?.prepend(floatOrb.el);
       paintVoice();
       if (!live?.active && !nb.history.length) {
-        bubbleSay("hint", "Tap me to talk about what you're reading. I'll follow along on the page.");
+        bubbleSay("hint", "Tap me to talk about what you're reading.");
         hideBubbleSoon(6000);
       }
       if (!S.viewerDocId && nb.active_source) showPage(nb.active_source, currentPageFor(nb.active_source));
@@ -1084,7 +979,6 @@ export function createNotebookController(initial: Notebook) {
         el: els.stage,
         onPage: (n, total) => patch("viewer", { page: n, total }),
         onZoom: (zoom) => patch("viewer", { zoom }),
-        onUserScroll: () => pauseFollow(),
       });
     }
 
@@ -1198,7 +1092,6 @@ export function createNotebookController(initial: Notebook) {
     clearTimeout(progressTimer);
     clearTimeout(bubbleTimer);
     clearTimeout(idleTimer);
-    clearTimeout(retryTimer);
     cleanups.splice(0).forEach((fn) => fn());
     polling = false;
     S.user = S.model = null;
@@ -1214,8 +1107,7 @@ export function createNotebookController(initial: Notebook) {
     // sources & outline
     pickFiles, upload, removeSource, dismissJob, setActive, teachSection, outlineMenu, rename, setCover,
     // viewer
-    toggleViewer, setTab, openCitation, goToPage, prevPage, nextPage, zoomIn, zoomOut, fitWidth, setFollow,
-    resumeFollow: () => resumeFollow(true), viewerPointer,
+    toggleViewer, setTab, openCitation, goToPage, prevPage, nextPage, zoomIn, zoomOut, fitWidth, viewerPointer,
     currentPage: () => pdf?.page ?? null,
     // splits
     gutterPointerDown, gutterKeyDown, resetSplit,

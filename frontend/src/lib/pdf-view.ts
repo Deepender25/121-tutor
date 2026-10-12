@@ -21,7 +21,6 @@ export interface PdfViewOptions {
   el: HTMLElement;
   onPage?: (n: number, total: number) => void;
   onZoom?: (zoom: number) => void;
-  onUserScroll?: () => void;
 }
 
 export class PdfView {
@@ -31,7 +30,6 @@ export class PdfView {
   zoom = 1;
   private onPage: (n: number, total: number) => void;
   private onZoom: (zoom: number) => void;
-  private onUserScroll: () => void;
   private inner: HTMLElement;
   private pages: Page[] = [];
   private fit = 600;
@@ -45,11 +43,10 @@ export class PdfView {
   private ro: ResizeObserver;
   private listeners: [string, EventListener, AddEventListenerOptions?][] = [];
 
-  constructor({ el, onPage = () => {}, onZoom = () => {}, onUserScroll = () => {} }: PdfViewOptions) {
+  constructor({ el, onPage = () => {}, onZoom = () => {} }: PdfViewOptions) {
     this.el = el;
     this.onPage = onPage;
     this.onZoom = onZoom;
-    this.onUserScroll = onUserScroll;
     this.inner = h("div", { class: "pdf-pages" });
 
     // Pages within ~1.5 screens are rendered; pages that leave that band are released.
@@ -69,10 +66,6 @@ export class PdfView {
       this.listeners.push([type, fn, opts]);
     };
     on("scroll", () => this.schedule("scroll"), { passive: true });
-    // Scrolling by hand (as opposed to follow-along moving the page) is reported, so following can pause.
-    const byHand = () => { if (this.pages.length) this.onUserScroll(); };
-    on("wheel", ((e: WheelEvent) => { if (!e.ctrlKey) byHand(); }) as EventListener, { passive: true });
-    on("touchmove", byHand, { passive: true });
     // Two fingers zoom the pages around the point between them (CSS touch-action stops the browser zooming
     // the whole app instead); one finger keeps scrolling.
     let pinch: { dist: number; zoom: number } | null = null;
@@ -89,10 +82,6 @@ export class PdfView {
     const endPinch = ((e: TouchEvent) => { if (e.touches.length < 2) pinch = null; }) as EventListener;
     on("touchend", endPinch, { passive: true });
     on("touchcancel", endPinch, { passive: true });
-    on("pointerdown", ((e: PointerEvent) => { if (e.target === this.el) byHand(); }) as EventListener); // scrollbar
-    on("keydown", ((e: KeyboardEvent) => {
-      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) byHand();
-    }) as EventListener);
     on("wheel", ((e: WheelEvent) => {
       if (!e.ctrlKey || !this.pages.length) return; // trackpad pinch arrives as Ctrl+wheel
       e.preventDefault();
@@ -153,10 +142,9 @@ export class PdfView {
   next() { this.goTo(this.page + 1); }
   prev() { this.goTo(this.page - 1); }
 
-  // rects: [[x0, y0, x1, y1]] as fractions of the page. scroll: "reveal" brings the highlight into view only
-  // if it isn't comfortably visible already (follow-along); true always moves it to the upper third; false
-  // just paints it.
-  highlight(n: number, rects: number[][], scroll: boolean | "reveal" = true) {
+  // rects: [[x0, y0, x1, y1]] as fractions of the page. scroll: move the highlight to the upper third of the
+  // view; false just paints it.
+  highlight(n: number, rects: number[][], scroll = true) {
     this.clearHighlight();
     const p = this.pages[n - 1];
     if (!p || !rects?.length) return;
@@ -169,9 +157,6 @@ export class PdfView {
     else if (scroll) {
       const el = this.el;
       const top = p.el.offsetTop + rects[0][1] * p.el.offsetHeight;
-      const bottom = p.el.offsetTop + rects[rects.length - 1][3] * p.el.offsetHeight;
-      const visible = top >= el.scrollTop + el.clientHeight * 0.08 && bottom <= el.scrollTop + el.clientHeight * 0.8;
-      if (scroll === "reveal" && visible) return;
       const target = Math.max(0, top - el.clientHeight * 0.28);
       const far = Math.abs(target - el.scrollTop) > el.clientHeight * 3;
       el.scrollTo({ top: target, behavior: far ? "auto" : "smooth" });

@@ -376,7 +376,7 @@ async def page_find(doc_id: str, page: int, text: str = Query(..., max_length=20
 
 @app.get("/api/docs/{doc_id}/locate")
 async def page_locate(doc_id: str, text: str = Query(..., max_length=2000), first: int = 1, last: int = 0):
-    """Where a sentence of a chunk is printed (page + one rectangle per line), for follow-along highlights."""
+    """Where a sentence of a chunk is printed (page + one rectangle per line), to highlight a cited passage."""
     return await asyncio.to_thread(pages.locate_text, _source_pdf(doc_id), text, first, last or first)
 
 

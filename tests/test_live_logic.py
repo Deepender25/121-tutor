@@ -47,16 +47,6 @@ def test_join_text_adds_missing_space_after_tool_call():
     assert join_text("nineteen fifty", "-six") == "nineteen fifty-six"
 
 
-def test_history_keeps_citations_but_not_passage_text():
-    from tutor.server.live import without_text
-
-    passage = {"kind": "passage", "doc_id": "d", "page": 3, "snippet": "abc", "text": "long passage"}
-    search = {"kind": "search", "query": "q", "refs": [{"doc_id": "d", "page": 1, "snippet": "s", "text": "chunk"}]}
-    assert without_text(passage) == {"kind": "passage", "doc_id": "d", "page": 3, "snippet": "abc"}
-    assert without_text(search)["refs"] == [{"doc_id": "d", "page": 1, "snippet": "s"}]
-    assert "text" in search["refs"][0]  # the live event itself is untouched
-
-
 def test_embedding_crash_explanations(monkeypatch):
     from tutor.retrieval import worker
 

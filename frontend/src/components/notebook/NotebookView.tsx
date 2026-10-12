@@ -489,8 +489,6 @@ function Dock({ ctl }: { ctl: Ctl }) {
 
 const ViewerPanel = memo(function ViewerPanel({ ctl }: { ctl: Ctl }) {
   const v = useStore(ctl.store, (s) => s.viewer);
-  const follow = useStore(ctl.store, (s) => s.follow);
-  const pill = useStore(ctl.store, (s) => s.pill);
   const reading = useStore(ctl.store, (s) => s.reading);
   const [pageText, setPageText] = useState("");
   const editing = useRef(false);
@@ -530,13 +528,7 @@ const ViewerPanel = memo(function ViewerPanel({ ctl }: { ctl: Ctl }) {
           <span className="page-total">{v.docId && v.total ? `/ ${v.total}` : ""}</span>
         </span>
         <button className="icon-btn sm" aria-label="Next page" onClick={ctl.nextPage}><Icon name="right" className="sm" /></button>
-        <div className="spacer" />
-        <label className="follow-toggle" title="Keep the page on what the tutor is talking about, sentence by sentence">
-          <input type="checkbox" checked={follow} onChange={(e) => ctl.setFollow(e.target.checked)} />
-          <span className="switch" />Follow along
-        </label>
       </div>
-      {pill ? <button className="follow-pill" onClick={ctl.resumeFollow}><Icon name="crosshair" className="sm" /><span>{pill}</span></button> : null}
     </section>
   );
 });

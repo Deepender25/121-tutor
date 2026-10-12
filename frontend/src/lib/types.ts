@@ -23,7 +23,6 @@ export interface SearchRef {
   pages: string;
   section: string;
   snippet: string;
-  text?: string; // full chunk text: live events only (follow-along), never in saved history
 }
 
 export interface WebLink {
@@ -34,7 +33,7 @@ export interface WebLink {
 
 export type ToolUI =
   | { kind: "search"; query: string; refs: SearchRef[] }
-  | { kind: "passage"; doc_id: string; page: number; pages: string; section: string; position: string; snippet: string; text?: string }
+  | { kind: "passage"; doc_id: string; page: number; pages: string; section: string; position: string; snippet: string }
   | { kind: "web"; query: string; links: WebLink[] }
   | { kind: "error"; message: string };
 

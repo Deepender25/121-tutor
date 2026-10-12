@@ -86,7 +86,7 @@ def test_page_sizes(client, notebook):
     assert client.get(f"/api/docs/{notebook['doc_id']}/pages").json()["sizes"] == sizes  # served from the cache
 
 
-def test_locate_sentence_for_follow_along(client, notebook):
+def test_locate_sentence_for_citation_highlights(client, notebook):
     doc = notebook["doc_id"]
     # markdown and a different case don't matter; the page range is a hint (the neighbour is searched too)
     hit = client.get(f"/api/docs/{doc}/locate", params={
@@ -121,8 +121,10 @@ def test_tools_and_prompt(client, notebook):
     tools = NotebookTools(state.cache, state.embedder, nb.sources, nb.active_source)
     passage = tools.call("read_passage", {"target": "chapter 3"})
     assert passage.result["section"] == "3 Design" and passage.ui["page"] == 5
+    assert "text" not in passage.ui  # the browser gets the citation (page, snippet), not the passage
     found = tools.call("search_sources", {"query": "mesh filter size"})
     assert "200 micron" in found.result["results"][0]["text"]
+    assert all("text" not in r for r in found.ui["refs"])
     assert "error" in tools.call("read_passage", {"source": "9"}).result
     prompt = build_system_prompt(state.notebooks.get(notebook["id"]), state.cache)
     assert "Rainwater Harvesting Guide" in prompt and "3.1 Storage tank sizing" in prompt

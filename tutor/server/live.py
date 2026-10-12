@@ -67,14 +67,6 @@ class WebSearchGuard:
         return True
 
 
-def without_text(ui: dict) -> dict:
-    """The full chunk text is only for live follow-along; history keeps the citation, not the passage."""
-    ui = {k: v for k, v in ui.items() if k != "text"}
-    if "refs" in ui:
-        ui["refs"] = [{k: v for k, v in r.items() if k != "text"} for r in ui["refs"]]
-    return ui
-
-
 class TurnRecorder:
     """Accumulates transcripts into history entries (saved when the model's turn completes)."""
 
@@ -93,7 +85,7 @@ class TurnRecorder:
 
     def ref(self, ui: dict) -> None:
         if ui and ui.get("kind") in ("search", "passage", "web"):
-            self.refs.append(without_text(ui))
+            self.refs.append(ui)
 
     def flush(self) -> None:
         entries = []

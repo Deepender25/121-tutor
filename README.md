@@ -90,10 +90,6 @@ Run `python app.py --debug` to see everything in the API window too.
   the next conversation; the wording sent to the model is in `tutor/voice/style.py`.
 - **PDF viewer** that scrolls through the whole document vertically. Click any citation chip to jump to
   it; zoom with the buttons or Ctrl+scroll.
-- **Follow along**: while the tutor talks, the viewer highlights the sentence it's explaining, in time
-  with its voice, page after page. It only moves to another passage when the tutor is clearly talking
-  about it, and otherwise stays put rather than guessing. Scroll away to read something else and
-  following pauses; tap "Back to the tutor" (or just ask your next question) to pick it up again.
 - **Resizable panels**: drag the thin handles between Sources, Conversation and the PDF (double-click
   to reset; drag Sources all the way left to hide it). Sizes are remembered.
 - **Full-screen reading** (the ⛶ button in the viewer, or press F): the PDF fills the screen and the

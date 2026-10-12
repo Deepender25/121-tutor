@@ -70,7 +70,7 @@ def find_text(pdf: Path, page: int, text: str, max_phrases: int = 4) -> list[lis
     return rects
 
 
-# ---- locating a sentence for follow-along highlights ---------------------------------------
+# ---- locating a sentence, to highlight a cited passage ----------------------------------------
 
 _TOKEN = re.compile(r"[^\W_]+")
 
@@ -101,7 +101,7 @@ def _page_words(page) -> list[tuple[str, tuple]]:
     return out
 
 
-_words_cache: OrderedDict = OrderedDict()  # (pdf, mtime, page) -> words; follow-along hits the same pages
+_words_cache: OrderedDict = OrderedDict()  # (pdf, mtime, page) -> words; citations often hit the same pages
 
 
 def _cached_words(pdf: Path, number: int, page) -> list[tuple[str, tuple]]:

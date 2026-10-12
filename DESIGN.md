@@ -121,8 +121,8 @@ language (Hindi/English mixing mirrored), never talk over the user (3.8 proactiv
 - **Home**: notebook grid (create / rename / delete).
 - **Notebook**: Sources panel (upload with progress, active source, outline with progress ticks — click
   a section to have it taught) · Conversation (transcript, tool activity chips, citation chips, quick
-  actions, composer, voice dock) · PDF viewer (continuous vertical scroll; follows teaching, highlights
-  passages, opens PDF). Draggable splits between the panels; full-screen reading mode (§18).
+  actions, composer, voice dock) · PDF viewer (continuous vertical scroll; highlights cited passages,
+  opens PDF; moves only when you ask, §30). Draggable splits between the panels; full-screen reading mode (§18).
 - **Voice mode**: WebGL **FluidOrb** (shader from the user-provided component, unchanged) in the dock and
   as a large orb on a focused stage with live captions; flow speed and scale follow the audio level.
 - Light/dark/system themes; responsive down to phone width (tabbed panels); container queries for the
@@ -148,7 +148,7 @@ frontend/
                    not-found.tsx, error.tsx, ui-health/route.ts
   src/components/  Icon, overlays (toasts/dialogs/menus), Settings, AppShell, RouteStates,
                    home/HomeView, notebook/{controller.ts, NotebookView.tsx}
-  src/lib/         api (browser), server-api (server rendering), live, pdf-view, fluid-orb, follow,
+  src/lib/         api (browser), server-api (server rendering), live, pdf-view, fluid-orb,
                    store, status, theme, format, icons, types
 tests/  unit + API integration tests, fixtures/make_sample_pdf.py, questions_sample.yaml
 ```
@@ -287,7 +287,7 @@ may be used by Google to improve products. Don't describe the app as private.
   screens and releases the rest (memory stays flat on long PDFs). Render scale = on-screen width × DPR,
   rounded up to 0.25 steps so the server's PNG cache is reused. 100% = fit width, capped at 920 px.
   Zoom (buttons, Ctrl+wheel, trackpad pinch) and any resize keep the reading position; sharper renders
-  swap in without flashing. Citation/follow-along scrolls to the page and the highlighted passage.
+  swap in without flashing. A citation scrolls to the page and the highlighted passage.
 - **Resizable layout**: grid columns `sources | gutter | chat | gutter | viewer`. Drag a gutter, arrow
   keys on a focused gutter, double-click to reset. Sources width in px (220–440; dragging below 150
   collapses it, click the handle to reopen); viewer as a share of the width (scales with the window);
@@ -301,7 +301,7 @@ may be used by Google to improve products. Don't describe the app as private.
   type button opens an inline composer. Esc (or the browser's own exit) leaves reading mode; covered orbs
   pause rendering.
 
-## 19. Follow-along (2026-10-10)
+## 19. Follow-along (2026-10-10; removed, §30)
 
 Problems with the first version: the page jumped as soon as a passage was *fetched* (Gemini generates
 audio ~4× faster than it plays, so it often jumped while the tutor was still on the previous part); only
@@ -346,9 +346,9 @@ How it works now:
   The theme is applied by an inline script before first paint (`suppressHydrationWarning` on `<html>`).
 - **Hydration-safe:** values that differ between server and browser (greeting, local times, day
   separators, "2 hours ago") render after hydration (`useHydrated`). No hydration warnings in the console.
-- **Notebook page:** `controller.ts` holds all behaviour (voice session, follow-along, splits, reading mode,
+- **Notebook page:** `controller.ts` holds all behaviour (voice session, splits, reading mode,
   uploads, keyboard) and exposes a small external store; `NotebookView.tsx` renders from it. Imperative
-  engines (PdfView, FluidOrb, LiveClient, FollowTracker) are the same code as before, typed. On open, the
+  engines (PdfView, FluidOrb, LiveClient) are the same code as before, typed. On open, the
   page re-checks its data with the API (pages can come from the browser's back/forward cache).
   No `router.prefetch` on hover: it caches the whole notebook page for 5 minutes (stale history).
 - **Launcher:** `ui.py build` checks Node ≥ 20.9, runs `npm ci` when `package-lock.json` changes and
@@ -417,7 +417,7 @@ completed, and nobody could mark anything ("I can't physically mark the content 
 - Verified live: "mark all the content completed till up to point 2" → the tutor called update_progress and
   confirmed; unticking 2.1 made chapter 2 "in progress" (55%); Shift+click on 3.1 completed through 3.1 (82%).
 
-## 24. Follow-along v3: passage first, then sentence (2026-10-10)
+## 24. Follow-along v3: passage first, then sentence (2026-10-10; removed, §30)
 
 Complaint: the page "jumps to different sections". Cause, measured: the tracker matched the last 18
 spoken words against every sentence of every candidate at once, so with five search hits from five
@@ -665,3 +665,15 @@ crash) fails that job with an explanation instead of taking the server, and any 
 server notices a dead child by checking it's alive, not only by its pipe closing (on Windows a child that dies very
 early never closes it). Cost: a few seconds per PDF to start the child, against 1-3 minutes of reading. The
 command-line tools (`ingest.py`, `console.py`) are short-lived and still read in-process.
+
+## 30. Follow-along removed (2026-10-12)
+
+Removed at the person's request (supersedes §19 and §24): moving the page to match the tutor's speech, from
+passage and sentence matching alone, kept jumping between sections and couldn't be made dependable. Gone: the
+tracker (`lib/follow.ts`), the "Follow along" switch and the "Back to the tutor" pill, the viewer moving or
+highlighting by itself while the tutor talks (including opening a passage's page when the tutor starts reading
+it), reporting hand-scrolling from the viewer, and the full passage text sent to the browser with tool results
+(`ui.text`; the model still gets the passage). The page now moves only when the person asks: a citation chip
+(scrolls to the passage and highlights it, through `/api/docs/{id}/locate`, which stays for this), an outline
+section, a source, the page buttons. Captions and the floating bubble still follow the audio as it's heard.
+
