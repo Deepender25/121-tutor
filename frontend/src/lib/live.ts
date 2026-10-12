@@ -4,6 +4,7 @@
 // Events from the server (transcripts, tool activity, status) are passed to `onMessage`.
 // The WebSocket goes to this origin's /api, which Next.js proxies to the Python server.
 import { apiWsUrl } from "./api";
+import { wakeLockStatus } from "./wake-lock";
 import type { ToolUI } from "./types";
 
 const OUTPUT_RATE = 24000;
@@ -346,7 +347,8 @@ export class LiveClient {
   }
 }
 
-// Playback diagnostics, sent to the server's log every 30 s and at the end of a session. Reply audio that arrives
+// Playback diagnostics, sent to the server's log every 30 s, at the end of a session, and the moment the page is
+// hidden or shown (a hidden page may be suspended before the next report). Reply audio that arrives
 // after the previous chunk finished leaves a gap: the speech stops and restarts mid-waveform, which clicks.
 // Long main-thread tasks (the page busy elsewhere) are the usual cause of late handling; the context's state
 // changes and the microphone's actual settings show what the phone's audio system did.
@@ -369,6 +371,15 @@ class PlaybackDiagnostics {
   private observer: PerformanceObserver | null = null;
   private timer: number | null = null;
   private lastSent = "";
+  private pageEvents: string[] = []; // "at:what": visibility changes, page hide/show, freeze/resume
+  private stalls: string[] = []; // "at:ms": the page didn't run at all for that long (suspended or frozen)
+  private beat = 0;
+  private heartbeat: number | null = null;
+  private onPage = (e: Event) => {
+    const what = e.type === "visibilitychange" ? document.visibilityState : e.type;
+    if (this.pageEvents.length < 40) this.pageEvents.push(`${this.at()}:${what}`);
+    this.report(false);
+  };
 
   private at() { return Math.round((performance.now() - this.t0) / 100) / 10; }
 
@@ -388,6 +399,20 @@ class PlaybackDiagnostics {
       this.observer.observe({ type: "longtask", buffered: false });
     } catch { /* not supported in this browser */ }
     this.timer = window.setInterval(() => this.report(false), 30000);
+    this.pageEvents.push(`0:${document.visibilityState}`);
+    for (const type of ["visibilitychange", "pagehide", "pageshow", "freeze", "resume"]) document.addEventListener(type, this.onPage);
+    window.addEventListener("pagehide", this.onPage);
+    // A 1 s heartbeat that arrives much later than that means the page wasn't running in between.
+    this.beat = performance.now();
+    this.heartbeat = window.setInterval(() => {
+      const now = performance.now();
+      const late = now - this.beat - 1000;
+      this.beat = now;
+      if (late > 1500 && this.stalls.length < 30) {
+        this.stalls.push(`${this.at()}:${Math.round(late)}`);
+        this.report(false);
+      }
+    }, 1000);
   }
 
   mic(stream: MediaStream) {
@@ -413,7 +438,8 @@ class PlaybackDiagnostics {
       final, t: this.at(), rate: ctx.sampleRate, baseLatencyMs: Math.round((ctx.baseLatency || 0) * 1000),
       outputLatencyMs: Math.round((ctx.outputLatency || 0) * 1000), audioS: Math.round(this.audioS), chunks: this.chunks,
       gaps: this.gapCount, gapMs: Math.round(this.gapMs), gapList: this.gaps, longTasks: this.longTasks, longestTaskMs: this.longestTask,
-      longList: this.longAt, states: this.states, mic: this.micInfo, ua: navigator.userAgent,
+      longList: this.longAt, states: this.states, mic: this.micInfo, page: this.pageEvents, stalls: this.stalls,
+      wakeLock: wakeLockStatus(), ua: navigator.userAgent,
     };
     const key = JSON.stringify({ ...stats, t: 0, final: false });
     if (!final && key === this.lastSent) return;
@@ -424,6 +450,10 @@ class PlaybackDiagnostics {
   stop() {
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
+    if (this.heartbeat !== null) clearInterval(this.heartbeat);
+    this.heartbeat = null;
+    for (const type of ["visibilitychange", "pagehide", "pageshow", "freeze", "resume"]) document.removeEventListener(type, this.onPage);
+    window.removeEventListener("pagehide", this.onPage);
     this.observer?.disconnect();
     this.observer = null;
     if (this.ctx) this.ctx.onstatechange = null;

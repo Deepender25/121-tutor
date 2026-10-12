@@ -5,9 +5,14 @@
 type Sentinel = { released: boolean; release(): Promise<void>; addEventListener(type: "release", fn: () => void): void };
 type WakeLockApi = { request(type: "screen"): Promise<Sentinel> };
 
+// What happened to the last request, for the voice session's diagnostics report.
+let status = "not requested";
+export const wakeLockStatus = () => status;
+
 export function keepScreenOn(): () => void {
   const wakeLock = (navigator as Navigator & { wakeLock?: WakeLockApi }).wakeLock;
-  if (!wakeLock || !matchMedia("(pointer: coarse)").matches) return () => {};
+  if (!matchMedia("(pointer: coarse)").matches) { status = "not a touch device"; return () => {}; }
+  if (!wakeLock) { status = "unsupported"; return () => {}; }
   let lock: Sentinel | null = null;
   let pending = false;
   let stopped = false;
@@ -17,9 +22,12 @@ export function keepScreenOn(): () => void {
     pending = true;
     try {
       lock = await wakeLock.request("screen");
-      lock.addEventListener("release", () => { lock = null; });
+      status = "held";
+      lock.addEventListener("release", () => { lock = null; status = "released"; });
       if (stopped) lock.release().catch(() => {});
-    } catch { /* not allowed right now (battery saver, no tap yet): the next visibility change or tap retries */ }
+    } catch (e) { // not allowed right now (battery saver, no tap yet): the next visibility change or tap retries
+      status = `refused (${(e as Error)?.name || "error"})`;
+    }
     finally { pending = false; }
   };
   const onVisible = () => { if (document.visibilityState === "visible") acquire(); };

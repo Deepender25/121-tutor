@@ -298,6 +298,11 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
         while True:
             msg = await ws.receive()
             if msg["type"] == "websocket.disconnect":
+                # 1000/1001: the page closed it; 1006: the connection dropped; 1011: no reply to keep-alive pings
+                # (the browser stopped reading: a suspended or frozen page, or the network)
+                log.info("Browser connection closed (code %s)", msg.get("code"))
+                if tape:
+                    tape.note(f"browser connection closed (code {msg.get('code')})")
                 return
             if msg.get("bytes") is not None:
                 if tape:
@@ -320,6 +325,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
                 if tape:
                     tape.note(f"client_stats {json.dumps(stats, ensure_ascii=False)}")
             elif kind == "close":
+                log.info("The page ended the session")
                 return
 
     read_task = asyncio.create_task(reader())
