@@ -48,6 +48,8 @@ export class LiveClient {
   private nextTime = 0;
   private pendingText: string[] = [];
   private raf: number | null = null;
+  private inReply = false; // reply audio is flowing (a gap now is audio arriving late, not a pause)
+  private diag = new PlaybackDiagnostics();
 
   constructor(notebookId: string, handlers: Handlers) {
     this.notebookId = notebookId;
@@ -87,6 +89,8 @@ export class LiveClient {
       this.gain.connect(this.analyser);
       this.analyser.connect(this.ctx.destination);
       this.levelLoop();
+      this.diag = new PlaybackDiagnostics();
+      this.diag.start(this.ctx);
     } catch {
       this.fail("Your browser couldn't start audio. Try Chrome or Edge.");
       return;
@@ -104,6 +108,7 @@ export class LiveClient {
     this.ws = ws;
     ws.onopen = () => {
       for (const text of this.pendingText.splice(0)) ws.send(JSON.stringify({ type: "text", text }));
+      this.diag.onReport = (stats) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "client_stats", ...stats })); };
     };
     ws.onmessage = (e) => {
       if (typeof e.data !== "string") { this.play(e.data as ArrayBuffer); return; }
@@ -115,6 +120,8 @@ export class LiveClient {
         else if (msg.state === "idle") this.h.onMessage?.({ type: "notice", text: "Voice session paused after a few quiet minutes. Tap the orb to continue." });
       } else if (msg.type === "interrupted") {
         this.flushAudio();
+      } else if (msg.type === "turn_complete" || msg.type === "tool_call") {
+        this.inReply = false; // the next audio starts a new stretch: a pause before it is expected
       } else if (msg.type === "error") {
         this.h.onError?.(msg.message, !!msg.fatal);
       }
@@ -129,6 +136,7 @@ export class LiveClient {
   }
 
   end() {
+    this.diag.report(true);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try { this.ws.send(JSON.stringify({ type: "close" })); } catch { /* closing anyway */ }
     }
@@ -143,6 +151,7 @@ export class LiveClient {
     this.flushAudio();
     if (this.raf !== null) cancelAnimationFrame(this.raf);
     this.raf = null;
+    this.diag.stop();
     if (this.ctx) { this.ctx.close().catch(() => {}); this.ctx = null; }
     this.ws = null;
     this.pendingText = [];
@@ -184,6 +193,7 @@ export class LiveClient {
             this.ws.send(e.data.buffer);
           }
         };
+        this.diag.mic(this.stream);
         this.micSource.connect(this.recorder);
         // The worklet must be pulled by the graph to run; route it through a muted gain.
         const sink = this.ctx.createGain();
@@ -274,7 +284,12 @@ export class LiveClient {
     src.connect(this.bus);
     const now = this.ctx.currentTime;
     // Small jitter buffer when starting from silence; back-to-back otherwise (gapless).
-    if (this.nextTime < now) this.nextTime = now + 0.06;
+    if (this.nextTime < now) {
+      if (this.inReply && this.nextTime > 0) this.diag.gap((now + 0.06 - this.nextTime) * 1000);
+      this.nextTime = now + 0.06;
+    }
+    this.inReply = true;
+    this.diag.chunk(pcm.length / OUTPUT_RATE);
     src.start(this.nextTime);
     this.nextTime += buffer.duration;
     this.sources.add(src);
@@ -307,6 +322,7 @@ export class LiveClient {
     this.sources.clear();
     this.carry = null;
     this.nextTime = 0;
+    this.inReply = false;
     this.h.onState?.(this.state);
   }
 
@@ -327,5 +343,91 @@ export class LiveClient {
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
+  }
+}
+
+// Playback diagnostics, sent to the server's log every 30 s and at the end of a session. Reply audio that arrives
+// after the previous chunk finished leaves a gap: the speech stops and restarts mid-waveform, which clicks.
+// Long main-thread tasks (the page busy elsewhere) are the usual cause of late handling; the context's state
+// changes and the microphone's actual settings show what the phone's audio system did.
+type Stats = Record<string, unknown>;
+
+class PlaybackDiagnostics {
+  onReport: ((stats: Stats) => void) | null = null;
+  private ctx: AudioContext | null = null;
+  private t0 = 0;
+  private audioS = 0;
+  private chunks = 0;
+  private gaps: string[] = []; // "at s:ms"
+  private gapCount = 0;
+  private gapMs = 0;
+  private longTasks = 0;
+  private longestTask = 0;
+  private longAt: string[] = [];
+  private states: string[] = [];
+  private micInfo: Stats = {};
+  private observer: PerformanceObserver | null = null;
+  private timer: number | null = null;
+  private lastSent = "";
+
+  private at() { return Math.round((performance.now() - this.t0) / 100) / 10; }
+
+  start(ctx: AudioContext) {
+    this.ctx = ctx;
+    this.t0 = performance.now();
+    this.states.push(`0:${ctx.state}`);
+    ctx.onstatechange = () => this.states.push(`${this.at()}:${ctx.state}`);
+    try {
+      this.observer = new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          this.longTasks++;
+          this.longestTask = Math.max(this.longestTask, Math.round(e.duration));
+          if (e.duration >= 150 && this.longAt.length < 30) this.longAt.push(`${Math.round((e.startTime - this.t0) / 100) / 10}:${Math.round(e.duration)}`);
+        }
+      });
+      this.observer.observe({ type: "longtask", buffered: false });
+    } catch { /* not supported in this browser */ }
+    this.timer = window.setInterval(() => this.report(false), 30000);
+  }
+
+  mic(stream: MediaStream) {
+    const track = stream.getAudioTracks()[0];
+    const set = (track?.getSettings?.() || {}) as MediaTrackSettings & Stats;
+    this.micInfo = {
+      label: track?.label || "", rate: set.sampleRate, ec: set.echoCancellation, ns: set.noiseSuppression, agc: set.autoGainControl,
+    };
+  }
+
+  chunk(seconds: number) { this.chunks++; this.audioS += seconds; }
+
+  gap(ms: number) {
+    this.gapCount++;
+    this.gapMs += ms;
+    if (this.gaps.length < 40) this.gaps.push(`${this.at()}:${Math.round(ms)}`);
+  }
+
+  report(final: boolean) {
+    if (!this.ctx || !this.onReport) return;
+    const ctx = this.ctx as AudioContext & { outputLatency?: number };
+    const stats: Stats = {
+      final, t: this.at(), rate: ctx.sampleRate, baseLatencyMs: Math.round((ctx.baseLatency || 0) * 1000),
+      outputLatencyMs: Math.round((ctx.outputLatency || 0) * 1000), audioS: Math.round(this.audioS), chunks: this.chunks,
+      gaps: this.gapCount, gapMs: Math.round(this.gapMs), gapList: this.gaps, longTasks: this.longTasks, longestTaskMs: this.longestTask,
+      longList: this.longAt, states: this.states, mic: this.micInfo, ua: navigator.userAgent,
+    };
+    const key = JSON.stringify({ ...stats, t: 0, final: false });
+    if (!final && key === this.lastSent) return;
+    this.lastSent = key;
+    try { this.onReport(stats); } catch { /* socket closing */ }
+  }
+
+  stop() {
+    if (this.timer !== null) clearInterval(this.timer);
+    this.timer = null;
+    this.observer?.disconnect();
+    this.observer = null;
+    if (this.ctx) this.ctx.onstatechange = null;
+    this.ctx = null;
+    this.onReport = null;
   }
 }

@@ -61,6 +61,10 @@ VAD_END_SENSITIVITY = os.environ.get("VOICE_TUTOR_VAD_END_SENSITIVITY", "low")  
 # How readily sound counts as you starting to talk (which interrupts the tutor). "low": a clear voice still does,
 # but the tutor's own voice coming back through a phone speaker, or background noise, doesn't cut it off.
 VAD_START_SENSITIVITY = os.environ.get("VOICE_TUTOR_VAD_START_SENSITIVITY", "low")  # "low" | "high"
+# Diagnostics for sound problems: save each voice session's audio in both directions (what the tutor sent, what
+# the microphone sent) as WAV files with a timeline, in <data>/debug-audio, keeping the last few sessions.
+# Off by default: it records your voice. Turn it on only while investigating, then off again.
+RECORD_AUDIO = os.environ.get("VOICE_TUTOR_RECORD_AUDIO", "off").strip().lower() in ("on", "1", "true", "yes")
 
 
 def gemini_api_key() -> str:
@@ -75,6 +79,7 @@ LOG_DIR = Path(os.environ.get("VOICE_TUTOR_LOGS") or PROJECT_ROOT / "logs")
 
 FILES_DIR = DATA_ROOT / "files"  # uploaded PDFs, stored as <doc_id>.pdf
 NOTEBOOKS_DIR = DATA_ROOT / "notebooks"
+DEBUG_AUDIO_DIR = DATA_ROOT / "debug-audio"  # VOICE_TUTOR_RECORD_AUDIO=on only
 SETTINGS_FILE = DATA_ROOT / "settings.json"
 
 # Web app: the UI (Next.js, frontend/) is what you open; it forwards /api to the Python API server.

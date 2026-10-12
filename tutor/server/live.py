@@ -1,7 +1,8 @@
 """WebSocket bridge: browser <-> VoiceSession (Gemini Live), with tools running locally.
 
 Browser -> server: binary frames = 16 kHz mono PCM16 mic audio;
-                   JSON {"type": "text", "text"} | {"type": "audio_end"} | {"type": "close"}
+                   JSON {"type": "text", "text"} | {"type": "audio_end"} | {"type": "close"} |
+                        {"type": "client_stats", ...} (playback diagnostics, logged)
 Server -> browser: binary frames = 24 kHz mono PCM16 speech;
                    JSON {"type": "status"|"transcript"|"interrupted"|"turn_complete"|"tool_call"|
                          "tool_result"|"error", ...}
@@ -12,6 +13,7 @@ import contextlib
 import json
 import logging
 import time
+import wave
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -111,6 +113,58 @@ class TurnRecorder:
         self.user, self.model, self.refs = "", "", []
 
 
+class AudioTape:
+    """Diagnostics (VOICE_TUTOR_RECORD_AUDIO=on): a session's audio in both directions as WAV files, and a
+    timeline that places each event at its position in both recordings, so a sound problem can be traced to
+    Gemini's output, the microphone, or playback in the browser."""
+
+    KEEP = 6  # sessions
+
+    def __init__(self, name: str) -> None:
+        folder = config.DEBUG_AUDIO_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self.paths = [folder / f"{stamp}-tutor.wav", folder / f"{stamp}-mic.wav", folder / f"{stamp}-timeline.txt"]
+        self.tutor_wav = self._wav(self.paths[0], 24000)
+        self.mic_wav = self._wav(self.paths[1], 16000)
+        self.timeline = open(self.paths[2], "w", encoding="utf-8")  # noqa: SIM115 - closed in close()
+        self.t0 = time.perf_counter()
+        self.tutor_s = 0.0
+        self.mic_s = 0.0
+        self.note(f"session: {name}")
+        stamps = sorted({p.name[:15] for p in folder.iterdir() if p.name[:8].isdigit()})
+        for old in stamps[:-self.KEEP]:
+            for p in folder.glob(f"{old}-*"):
+                with contextlib.suppress(OSError):
+                    p.unlink()
+
+    @staticmethod
+    def _wav(path, rate: int) -> wave.Wave_write:
+        w = wave.open(str(path), "wb")
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        return w
+
+    def tutor(self, pcm: bytes) -> None:
+        self.tutor_wav.writeframes(pcm)
+        self.tutor_s += len(pcm) / 48000
+
+    def mic(self, pcm: bytes) -> None:
+        self.mic_wav.writeframes(pcm)
+        self.mic_s += len(pcm) / 32000
+
+    def note(self, text: str) -> None:
+        self.timeline.write(f"{time.perf_counter() - self.t0:8.2f}s  tutor.wav@{self.tutor_s:7.2f}s  "
+                            f"mic.wav@{self.mic_s:7.2f}s  {text}\n")
+        self.timeline.flush()
+
+    def close(self) -> None:
+        for f in (self.tutor_wav, self.mic_wav, self.timeline):
+            with contextlib.suppress(Exception):
+                f.close()
+
+
 async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> None:
     await ws.accept()
     outgoing: asyncio.Queue = asyncio.Queue(maxsize=2000)
@@ -150,6 +204,9 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
              "" if len(notebook.sources) == 1 else "s", voice, config.LIVE_MODEL)
     timing = {"input_at": None}  # when the user's latest input arrived, for reply-latency logging
     interruptions = [0]  # replies cut off by (what Gemini heard as) the person talking: echo shows up here
+    tape = AudioTape(notebook.name) if config.RECORD_AUDIO else None
+    if tape:
+        log.info("Recording this session's audio for diagnostics: %s", tape.paths[0].parent)
 
     def on_active_change(doc_id: str) -> None:
         with contextlib.suppress(KeyError):
@@ -163,9 +220,16 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
                 log.info("Reply audio started %.2fs after your input", time.perf_counter() - timing["input_at"])
                 timing["input_at"] = None
             if outgoing.full():  # browser not keeping up: drop audio rather than block the session
+                log.warning("Dropped %d bytes of reply audio: the browser isn't keeping up", len(event.audio))
+                if tape:
+                    tape.note(f"DROPPED {len(event.audio)} bytes")
                 return
+            if tape:
+                tape.tutor(event.audio)
             outgoing.put_nowait(event.audio)
             return
+        if tape and event.kind in ("transcript", "interrupted", "turn_complete", "tool_call", "error"):
+            tape.note(f"{event.kind} {short(json.dumps(event.data, ensure_ascii=False), 200)}")
         if event.kind == "transcript":
             if event.data["role"] == "user":
                 recorder.user_text(event.data["text"])
@@ -236,6 +300,8 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
             if msg["type"] == "websocket.disconnect":
                 return
             if msg.get("bytes") is not None:
+                if tape:
+                    tape.mic(msg["bytes"])
                 await session.send_audio(msg["bytes"])
                 continue
             data = json.loads(msg.get("text") or "{}")
@@ -248,6 +314,11 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
                 await session.send_text(text)
             elif kind == "audio_end":
                 await session.end_audio()
+            elif kind == "client_stats":
+                stats = {k: v for k, v in data.items() if k != "type"}
+                log.info("Playback in the browser: %s", short(json.dumps(stats, ensure_ascii=False), 1500))
+                if tape:
+                    tape.note(f"client_stats {json.dumps(stats, ensure_ascii=False)}")
             elif kind == "close":
                 return
 
@@ -260,6 +331,9 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
     finally:
         await session.close()
         recorder.flush()
+        if tape:
+            tape.note("session ended")
+            tape.close()
         minutes, seconds = divmod(int(time.perf_counter() - started), 60)
         log.info("Voice session ended after %dm%02ds, %d exchange%s, %d interruption%s", minutes, seconds,
                  recorder.turns, "" if recorder.turns == 1 else "s", interruptions[0], "" if interruptions[0] == 1 else "s")
