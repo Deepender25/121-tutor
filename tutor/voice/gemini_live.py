@@ -132,6 +132,7 @@ class GeminiLiveSession(VoiceSession):
                                                if config.VAD_END_SENSITIVITY == "low"
                                                else types.EndSensitivity.END_SENSITIVITY_HIGH),
                     silence_duration_ms=config.VAD_SILENCE_MS,
+                    prefix_padding_ms=config.VAD_PREFIX_MS,
                 )
             ),
         )

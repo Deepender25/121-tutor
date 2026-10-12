@@ -61,6 +61,11 @@ VAD_END_SENSITIVITY = os.environ.get("VOICE_TUTOR_VAD_END_SENSITIVITY", "low")  
 # How readily sound counts as you starting to talk (which interrupts the tutor). "low": a clear voice still does,
 # but the tutor's own voice coming back through a phone speaker, or background noise, doesn't cut it off.
 VAD_START_SENSITIVITY = os.environ.get("VOICE_TUTOR_VAD_START_SENSITIVITY", "low")  # "low" | "high"
+# How long a sound must last before it counts as you starting to talk. Without it, on a phone speaker short bursts
+# (the tutor's own voice coming back, a knock) cut the tutor off again and again and reached Gemini as one-syllable
+# "words" ("bed", "pet", "net"): 13 interruptions in 2.5 minutes in one session. Speech that's meant to interrupt
+# ("wait, wait") lasts longer than this. Lower it if very short answers get missed.
+VAD_PREFIX_MS = int(os.environ.get("VOICE_TUTOR_VAD_PREFIX_MS", "300"))
 # Diagnostics for sound problems: save each voice session's audio in both directions (what the tutor sent, what
 # the microphone sent) as WAV files with a timeline, in <data>/debug-audio, keeping the last few sessions.
 # Off by default: it records your voice. Turn it on only while investigating, then off again.
