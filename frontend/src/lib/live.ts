@@ -9,6 +9,16 @@ import type { ToolUI } from "./types";
 const OUTPUT_RATE = 24000;
 const WORKLET_URL = "/audio/recorder-worklet.js";
 
+// Android Chrome puts the whole phone into call mode (MODE_IN_COMMUNICATION) when a microphone is opened with any
+// audio processing (echo cancellation, noise suppression, auto gain), and then plays every sound the page makes
+// as voice-call audio, which is where the beeps and siren-like sounds came from. With all processing off the phone
+// stays in media mode (Chromium media/audio/android/audio_manager_android.cc), so on Android the microphone opens
+// raw and EchoGate below keeps the tutor's own voice, picked up by the microphone, from reaching Gemini.
+const ANDROID = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+const MIC_CONSTRAINTS: MediaTrackConstraints = ANDROID
+  ? { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+  : { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+
 export type LiveState = "idle" | "connecting" | "ready" | "reconnecting" | "closed";
 
 export type LiveMessage =
@@ -50,6 +60,7 @@ export class LiveClient {
   private raf: number | null = null;
   private inReply = false; // reply audio is flowing (a gap now is audio arriving late, not a pause)
   private diag = new PlaybackDiagnostics();
+  private gate: EchoGate | null = ANDROID ? new EchoGate() : null;
 
   constructor(notebookId: string, handlers: Handlers) {
     this.notebookId = notebookId;
@@ -91,6 +102,7 @@ export class LiveClient {
       this.levelLoop();
       this.diag = new PlaybackDiagnostics();
       this.diag.start(this.ctx);
+      if (this.gate) { this.gate = new EchoGate(); this.diag.extra = () => this.gate?.stats() || {}; }
     } catch {
       this.fail("Your browser couldn't start audio. Try Chrome or Edge.");
       return;
@@ -181,16 +193,15 @@ export class LiveClient {
     try {
       if (!this.stream) {
         if (!this.ctx) return false;
-        this.stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        });
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS });
         await this.ctx.audioWorklet.addModule(WORKLET_URL);
         this.micSource = this.ctx.createMediaStreamSource(this.stream);
         this.recorder = new AudioWorkletNode(this.ctx, "recorder-processor");
         this.recorder.port.onmessage = (e) => {
           if (e.data.type === "level") this.micLevel = e.data.value;
           else if (e.data.type === "audio" && this.micOn && this.ws?.readyState === WebSocket.OPEN) {
-            this.ws.send(e.data.buffer);
+            if (!this.gate || !this.ctx) { this.ws.send(e.data.buffer); return; }
+            for (const frame of this.gate.filter(new Int16Array(e.data.buffer), this.ctx.currentTime)) this.ws.send(frame);
           }
         };
         this.diag.mic(this.stream);
@@ -291,6 +302,7 @@ export class LiveClient {
     this.inReply = true;
     this.diag.chunk(pcm.length / OUTPUT_RATE);
     src.start(this.nextTime);
+    this.gate?.played(data, this.nextTime, OUTPUT_RATE);
     this.nextTime += buffer.duration;
     this.sources.add(src);
     const wasSpeaking = this.sources.size === 1;
@@ -323,6 +335,7 @@ export class LiveClient {
     this.carry = null;
     this.nextTime = 0;
     this.inReply = false;
+    this.gate?.stopped();
     this.h.onState?.(this.state);
   }
 
@@ -354,6 +367,7 @@ type Stats = Record<string, unknown>;
 
 class PlaybackDiagnostics {
   onReport: ((stats: Stats) => void) | null = null;
+  extra: (() => Stats) | null = null;
   private ctx: AudioContext | null = null;
   private t0 = 0;
   private audioS = 0;
@@ -413,7 +427,7 @@ class PlaybackDiagnostics {
       final, t: this.at(), rate: ctx.sampleRate, baseLatencyMs: Math.round((ctx.baseLatency || 0) * 1000),
       outputLatencyMs: Math.round((ctx.outputLatency || 0) * 1000), audioS: Math.round(this.audioS), chunks: this.chunks,
       gaps: this.gapCount, gapMs: Math.round(this.gapMs), gapList: this.gaps, longTasks: this.longTasks, longestTaskMs: this.longestTask,
-      longList: this.longAt, states: this.states, mic: this.micInfo, ua: navigator.userAgent,
+      longList: this.longAt, states: this.states, mic: this.micInfo, ua: navigator.userAgent, ...(this.extra?.() || {}),
     };
     const key = JSON.stringify({ ...stats, t: 0, final: false });
     if (!final && key === this.lastSent) return;
@@ -429,5 +443,79 @@ class PlaybackDiagnostics {
     if (this.ctx) this.ctx.onstatechange = null;
     this.ctx = null;
     this.onReport = null;
+  }
+}
+
+// Echo gate (Android, where the microphone runs without the phone's echo cancellation; see MIC_CONSTRAINTS).
+// While the tutor is audible, a microphone frame is mostly the tutor's own voice coming back from the speaker,
+// at a level proportional to what was played a moment earlier. The gate tracks the loudest that echo gets
+// relative to the playback (the coupling, learned from frames that are only echo) and sends silence in place of
+// echo. Sound clearly louder than the loudest expected echo for 160 ms is you interrupting: those held frames and
+// everything after go through until you stop for 0.6 s. With earphones the coupling falls to almost nothing,
+// so any speech gets through.
+class EchoGate {
+  private env: { t: number; rms: number }[] = []; // playback loudness per 20 ms, at its scheduled time
+  private coupling = 1;
+  private held: ArrayBuffer[] = [];
+  private talking = false; // you're talking over the tutor
+  private quiet = 0;
+  private gated = 0;
+  private bargeIns = 0;
+
+  played(data: Float32Array, start: number, rate: number) {
+    const step = Math.round(rate * 0.02);
+    for (let i = 0; i < data.length; i += step) {
+      let sum = 0;
+      const end = Math.min(data.length, i + step);
+      for (let j = i; j < end; j++) sum += data[j] * data[j];
+      this.env.push({ t: start + i / rate, rms: Math.sqrt(sum / (end - i)) });
+    }
+  }
+
+  stopped() { this.env = []; }
+
+  filter(frame: Int16Array, now: number): ArrayBuffer[] {
+    while (this.env.length && this.env[0].t < now - 1) this.env.shift();
+    // The echo in this frame left the speaker up to ~0.4 s ago (output and input latency plus the frame itself).
+    let ref = 0;
+    for (const e of this.env) if (e.t >= now - 0.4 && e.t <= now) ref = Math.max(ref, e.rms);
+    let sum = 0;
+    for (let i = 0; i < frame.length; i++) { const v = frame[i] / 32768; sum += v * v; }
+    const rms = Math.sqrt(sum / frame.length);
+    if (ref < 0.004) { // the tutor isn't audible: the microphone is all yours
+      this.talking = false;
+      return this.release(frame);
+    }
+    const loud = rms > Math.max(2.5 * this.coupling * ref, 0.015);
+    if (this.talking) {
+      this.quiet = loud ? 0 : this.quiet + 1;
+      if (this.quiet < 15) return [frame.buffer as ArrayBuffer];
+      this.talking = false;
+    }
+    if (loud) {
+      this.held.push(frame.buffer as ArrayBuffer);
+      if (this.held.length < 4) return [];
+      this.talking = true;
+      this.quiet = 0;
+      this.bargeIns++;
+      return this.release(null);
+    }
+    const ratio = rms / ref; // echo only: follow its peaks up quickly, let them fade slowly
+    this.coupling = Math.min(4, Math.max(0.02, this.coupling + (ratio > this.coupling ? 0.2 : 0.03) * (ratio - this.coupling)));
+    const silent = this.held.length + 1;
+    this.held = [];
+    this.gated += silent;
+    return Array.from({ length: silent }, () => new ArrayBuffer(frame.byteLength));
+  }
+
+  private release(frame: Int16Array | null): ArrayBuffer[] {
+    const out = this.held;
+    this.held = [];
+    if (frame) out.push(frame.buffer as ArrayBuffer);
+    return out;
+  }
+
+  stats(): Stats {
+    return { echoGate: { gatedFrames: this.gated, bargeIns: this.bargeIns, coupling: Math.round(this.coupling * 100) / 100 } };
   }
 }
