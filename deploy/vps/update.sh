@@ -26,7 +26,8 @@ install -m 644 deploy/vps/voice-tutor-backup.timer /etc/systemd/system/voice-tut
 install -m 755 deploy/vps/voice-tutor /usr/local/bin/voice-tutor
 systemctl daemon-reload
 systemctl restart voice-tutor-api
-for i in $(seq 1 30); do
+# Starting takes ~35 s on the 1/8-core server (loading the libraries alone is ~30 s): allow 2 minutes.
+for i in $(seq 1 120); do
   if curl -fsS --max-time 2 http://127.0.0.1:8766/api/health >/dev/null 2>&1; then
     echo "Updated to $after and healthy."
     exit 0
