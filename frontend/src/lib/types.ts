@@ -105,7 +105,11 @@ export interface Status {
   voices: string[];
   log_file: string;
   voice: string;
+  style: TutorStyle; // the tutor's manner (tutor/voice/style.py)
+  style_options?: Record<string, { label: string; options: { value: string; label: string; hint: string }[] }>;
 }
+
+export type TutorStyle = Record<string, string>; // warmth, expression, teaching
 
 export type Account = { auth: "off" } | { auth: "on"; email: string };
 

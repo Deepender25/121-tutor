@@ -84,7 +84,7 @@ function uploadForm<T>(url: string, form: FormData, onProgress?: (sent: number, 
 
 export const api = {
   status: () => request<Status>("GET", "/api/status", undefined, false, 8000),
-  saveSettings: (s: { voice: string }) => request<Status>("PUT", "/api/settings", s),
+  saveSettings: (s: { voice?: string; style?: Record<string, string> }) => request<Status>("PUT", "/api/settings", s),
   notebooks: () => request<NotebookSummary[]>("GET", "/api/notebooks"),
   createNotebook: (name: string) => request<NotebookSummary>("POST", "/api/notebooks", { name }),
   notebook: (id: string) => request<Notebook>("GET", `/api/notebooks/${id}`),

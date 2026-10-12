@@ -10,6 +10,7 @@ from tutor import config
 from tutor.library import DocumentCache
 from tutor.notebooks import NotebookStore
 from tutor.server.jobs import JobQueue
+from tutor.voice.style import clean_style
 
 log = logging.getLogger("state")
 
@@ -143,7 +144,7 @@ class AppState:
             except (json.JSONDecodeError, OSError):
                 data = {}
         voice = data.get("voice") if data.get("voice") in config.VOICES else config.DEFAULT_VOICE
-        return {"voice": voice}
+        return {"voice": voice, "style": clean_style(data.get("style"))}
 
     def settings(self) -> dict:
         with self._settings_lock:
@@ -154,11 +155,14 @@ class AppState:
             current = self._read_settings()  # NOT self.settings(): that would re-acquire the lock
             if changes.get("voice") in config.VOICES:
                 current["voice"] = changes["voice"]
+            if isinstance(changes.get("style"), dict):
+                current["style"] = clean_style({**current["style"], **changes["style"]})
             config.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
             tmp = config.SETTINGS_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps(current, indent=1), encoding="utf-8")
             tmp.replace(config.SETTINGS_FILE)
-            log.info("Settings saved: voice=%s", current["voice"])
+            log.info("Settings saved: voice=%s, tutor %s", current["voice"],
+                     ", ".join(f"{k}={v}" for k, v in current["style"].items()))
             return current
 
     @staticmethod

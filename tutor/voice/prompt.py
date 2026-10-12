@@ -7,6 +7,7 @@ compressed and resumption handles expire.
 from tutor import config
 from tutor.library import DocumentCache
 from tutor.notebooks import Notebook
+from tutor.voice.style import style_block
 
 TEMPLATE_PATH = config.PROJECT_ROOT / "prompts" / "system.md"
 MAX_OUTLINE_LINES = 40
@@ -62,9 +63,11 @@ def _recent_block(nb: Notebook) -> str:
             + "\n".join(lines))
 
 
-def build_system_prompt(nb: Notebook, cache: DocumentCache) -> str:
+def build_system_prompt(nb: Notebook, cache: DocumentCache, style: dict | None = None) -> str:
+    """`style`: the tutor's manner from Settings (tutor/voice/style.py); None means the defaults."""
     text = TEMPLATE_PATH.read_text(encoding="utf-8")
     for key, value in {
+        "{style_block}": style_block(style),
         "{notebook_name}": nb.name,
         "{sources_block}": _sources_block(nb, cache),
         "{position_block}": _position_block(nb, cache),

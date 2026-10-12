@@ -1,5 +1,6 @@
 "use client";
-// Settings sheet (voice with previews, theme, system status, shortcuts) and the top-bar status pill.
+// Settings sheet (voice with previews, the tutor's manner, theme, system status, shortcuts) and the top-bar
+// status pill.
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api } from "@/lib/api";
 import { refreshStatus, statusStore } from "@/lib/status";
@@ -74,22 +75,26 @@ export async function openSettings() {
 function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
   const s = useStore(statusStore, (st) => st.status);
   const [chosen, setChosen] = useState<string>(s?.voice || "Kore");
+  const [style, setStyle] = useState<Record<string, string>>(s?.style || {});
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   useSyncExternalStore(subscribePreview, () => preview.version, () => 0);
 
   // When fresh status arrives, follow the saved voice unless the user already picked another one.
-  useEffect(() => { if (s && !dirty) setChosen(s.voice); }, [s, dirty]);
+  useEffect(() => { if (s && !dirty) { setChosen(s.voice); setStyle(s.style || {}); } }, [s, dirty]);
 
   const choose = (v: string) => { setChosen(v); setDirty(true); };
+  const chooseStyle = (key: string, value: string) => { setStyle((st) => ({ ...st, [key]: value })); setDirty(true); };
+  const styleChanged = !!s && Object.keys(style).some((k) => style[k] !== s.style?.[k]);
+  const changed = !!s && (chosen !== s.voice || styleChanged);
   const voices = s?.voices || DEFAULT_VOICES;
 
   const save = async () => {
     setSaving(true);
     try {
-      await api.saveSettings({ voice: chosen });
+      await api.saveSettings({ voice: chosen, style });
       await refreshStatus();
-      toast(`Voice set to ${chosen}`, "success");
+      toast("Settings saved", "success");
       window.dispatchEvent(new CustomEvent("vt-settings", { detail: { voice: chosen } }));
       close(true);
     } catch (e) {
@@ -122,6 +127,28 @@ function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
           </div>
         </Section>
 
+        {s?.style_options ? (
+          <Section title="Tutor" hint="How the tutor talks to you and teaches.">
+            <div className="style-rows">
+              {Object.entries(s.style_options).map(([key, opt]) => {
+                const current = opt.options.find((o) => o.value === style[key]);
+                return (
+                  <div key={key} className="style-row">
+                    <span className="style-label" id={`style-${key}`}>{opt.label}</span>
+                    <div className="seg wide" role="radiogroup" aria-labelledby={`style-${key}`} style={{ gridTemplateColumns: `repeat(${opt.options.length}, minmax(0, 1fr))` }}>
+                      {opt.options.map((o) => (
+                        <button key={o.value} className={o.value === style[key] ? "on" : ""} role="radio" aria-checked={o.value === style[key]}
+                          onClick={() => chooseStyle(key, o.value)}>{o.label}</button>
+                      ))}
+                    </div>
+                    <p className="style-hint">{current?.hint || ""}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </Section>
+        ) : null}
+
         <Section title="Appearance"><ThemeSwitch /></Section>
 
         {s?.auth === "on" ? <AccountSection /> : null}
@@ -140,10 +167,10 @@ function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
         </Section>
       </div>
       <div className="sheet-foot">
-        <span className="sheet-note">Voice changes apply the next time you start talking.</span>
+        <span className="sheet-note">Voice and tutor changes apply the next time you start talking.</span>
         <div className="spacer" />
         <button className="btn" onClick={() => close()}>Cancel</button>
-        <button className="btn primary" disabled={saving || !(s && chosen !== s.voice)} onClick={save}>{saving ? "Saving…" : "Save changes"}</button>
+        <button className="btn primary" disabled={saving || !changed} onClick={save}>{saving ? "Saving…" : "Save changes"}</button>
       </div>
     </>
   );

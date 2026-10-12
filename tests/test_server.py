@@ -203,6 +203,26 @@ def test_settings_save_does_not_hang(client):
     assert client.put("/api/settings", json={"voice": "Nobody"}).status_code == 400
 
 
+def test_tutor_manner_setting(client, notebook):
+    """Encouragement, expression and teaching style: saved, validated, and written into the tutor's prompt."""
+    from tutor.server.app import state
+    from tutor.voice.prompt import build_system_prompt
+
+    status = client.get("/api/status").json()
+    assert status["style"] == {"warmth": "balanced", "expression": "natural", "teaching": "direct"}
+    assert [o["value"] for o in status["style_options"]["warmth"]["options"]] == ["minimal", "balanced", "warm"]
+    saved = client.put("/api/settings", json={"style": {"warmth": "minimal", "teaching": "exam"}}).json()
+    assert saved["style"] == {"warmth": "minimal", "expression": "natural", "teaching": "exam"}
+    assert saved["voice"] == client.get("/api/status").json()["voice"]  # untouched
+    assert client.put("/api/settings", json={"style": {"warmth": "gushing"}}).status_code == 400
+    assert client.put("/api/settings", json={"style": {"mood": "calm"}}).status_code == 400
+
+    prompt = build_system_prompt(state.notebooks.get(notebook["id"]), state.cache, state.settings()["style"])
+    assert "# Your manner" in prompt and "No praise" in prompt and "Teach for exams" in prompt
+    assert "Be warm and encouraging" not in prompt and "{style_block}" not in prompt
+    client.put("/api/settings", json={"style": {"warmth": "balanced", "teaching": "direct"}})
+
+
 def test_legacy_emoji_notebooks_get_an_icon():
     from tutor.notebooks import Notebook
 

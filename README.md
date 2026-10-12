@@ -85,6 +85,9 @@ Run `python app.py --debug` to see everything in the API window too.
   tap the big orb to go back to the transcript (your choice is remembered). The voice orb flows and swells with the
   tutor's voice; captions and spoken page citations. Typing works too and gets spoken answers.
 - **Voice previews**: press play on any voice in Settings to hear it before choosing (generated once, cached).
+- **Tutor manner** (Settings > Tutor): how encouraging it is (Minimal, Balanced, Warm), how much emotion is in
+  its voice (Calm, Natural, Lively) and how it teaches (Direct, Step by step, Socratic, Exam prep). Applies from
+  the next conversation; the wording sent to the model is in `tutor/voice/style.py`.
 - **PDF viewer** that scrolls through the whole document vertically. Click any citation chip to jump to
   it; zoom with the buttons or Ctrl+scroll.
 - **Follow along**: while the tutor talks, the viewer highlights the sentence it's explaining, in time

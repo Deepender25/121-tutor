@@ -24,6 +24,7 @@ from tutor.server.live import live_endpoint
 from tutor.server.security import ConfiguredCORS, SecurityMiddleware
 from tutor.server.state import AppState
 from tutor.tools import NotebookTools
+from tutor.voice.style import STYLES, style_options
 
 log = logging.getLogger("server")
 http_log = logging.getLogger("http")
@@ -155,6 +156,7 @@ def status():
         "live_model": config.LIVE_MODEL,
         "web_provider": web.provider(),
         "voices": config.VOICES,
+        "style_options": style_options(),
         "log_file": str(config.LOG_DIR / "voice-tutor.log"),
         **state.settings(),
     }
@@ -162,13 +164,18 @@ def status():
 
 class SettingsIn(BaseModel):
     voice: str | None = None
+    style: dict[str, str] | None = None  # any of warmth / expression / teaching (tutor/voice/style.py)
 
 
 @app.put("/api/settings")
 def update_settings(body: SettingsIn):
     if body.voice is not None and body.voice not in config.VOICES:
         raise HTTPException(400, "Unknown voice")
-    return state.update_settings(voice=body.voice)
+    if body.style is not None:
+        for key, value in body.style.items():
+            if key not in STYLES or value not in {v[0] for v in STYLES[key][1]}:
+                raise HTTPException(400, f"Unknown tutor setting: {key}={value}")
+    return state.update_settings(voice=body.voice, style=body.style)
 
 
 @app.get("/api/voices/{voice}/preview")

@@ -200,8 +200,10 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
     guard = WebSearchGuard()
     started = time.perf_counter()
     voice = state.settings()["voice"]
-    log.info("Voice session started: \"%s\" (%d source%s, voice %s, model %s)", notebook.name, len(notebook.sources),
-             "" if len(notebook.sources) == 1 else "s", voice, config.LIVE_MODEL)
+    style = state.settings()["style"]
+    log.info("Voice session started: \"%s\" (%d source%s, voice %s, model %s, tutor %s)", notebook.name,
+             len(notebook.sources), "" if len(notebook.sources) == 1 else "s", voice, config.LIVE_MODEL,
+             "/".join(style.values()))
     timing = {"input_at": None}  # when the user's latest input arrived, for reply-latency logging
     interruptions = [0]  # replies cut off by (what Gemini heard as) the person talking: echo shows up here
     tape = AudioTape(notebook.name) if config.RECORD_AUDIO else None
@@ -280,7 +282,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
         return outcome.result, outcome.ui
 
     def build_prompt() -> str:
-        return build_system_prompt(state.notebooks.get(notebook_id), state.cache)
+        return build_system_prompt(state.notebooks.get(notebook_id), state.cache, state.settings()["style"])
 
     session = GeminiLiveSession(
         api_key=config.gemini_api_key(),

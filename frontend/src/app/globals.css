@@ -883,6 +883,12 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 .seg button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 6px 14px; border-radius: 9px; font-size: 13px; font-weight: 550; color: var(--muted); transition: background .15s, color .15s; }
 .seg button:hover { color: var(--ink); }
 .seg button.on { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); }
+/* the tutor's manner: one full-width segmented row per setting, the chosen option explained underneath */
+.style-rows { display: grid; gap: 16px; }
+.style-label { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.seg.wide { display: grid; width: 100%; }
+.seg.wide button { justify-content: center; padding: 7px 6px; text-align: center; line-height: 1.2; min-width: 0; }
+.style-hint { margin: 6px 2px 0; font-size: 12.5px; color: var(--muted); }
 
 .status-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 13px; overflow: hidden; }
 .status-row { display: grid; grid-template-columns: 28px 110px 1fr 10px; align-items: center; gap: 8px; padding: 10px 12px; font-size: 13px; }
