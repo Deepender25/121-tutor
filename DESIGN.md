@@ -815,3 +815,17 @@ excerpt. Results carry `cite` names to say aloud, never an address (the publishe
 page title, else the domain's main word); the same search within 10 minutes is answered from memory. Tavily and
 DuckDuckGo fallbacks honour news and time windows. Highlights (Fetch's ranked passages) would replace the local
 excerpts but isn't enabled on this account (403). Typical result: 2-3 pages read, 6-9 s.
+
+## 34. The tutor can switch the PDF on screen (2026-10-22)
+
+"Change the PDF", "switch to unit 2", "dusri PDF kholo", "show me page 12": the `open_source` tool resolves the
+source (by number or title words, like the other tools), makes it the active source (saved, so the left panel marks
+it as Teaching) and returns its top-level sections and the reading position, so the tutor can say what's there and
+ask what to cover. It doesn't read or move the reading position: teaching from it is still `read_passage`. A page
+outside the PDF is a speakable error. The browser gets `{"kind": "open", doc_id, page}`: the left panel switches the
+active source and reloads its outline, and the viewer opens that PDF at the page (where reading left off when no page
+is given) and is revealed. This is the one time the viewer moves for the tutor, because the student asked for it;
+passages it reads don't move the viewer. When `read_passage` itself changes source, the outline is reloaded too
+(before, the left panel highlighted the new source but kept the old outline). Checked live: switching to unit 2,
+page 5 of it, back to unit 1 then teaching its first topic, and "Dusri PDF kholo"; and in the browser, both panels
+followed "Switch to the first PDF and show me page 4".

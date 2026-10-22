@@ -60,6 +60,25 @@ DECLARATIONS = [
         },
     },
     {
+        "name": "open_source",
+        "description": (
+            "Switch to another source: show it (at a page, if given) in the app's page viewer and make it the active "
+            "source that read_passage and the outline use. Use when the user asks to change, switch to, open or show "
+            "a PDF or source, or a page of one ('open unit 2', 'switch to the other PDF', 'show me page 12'). Doesn't "
+            "read or move the reading position; returns the source's outline and where reading left off, so you can "
+            "ask what to cover or use read_passage to teach from it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": (
+                    "Which source: its number from the source list (e.g. '2') or words from its title. Omit to show "
+                    "a page of the active source.")},
+                "page": {"type": "integer", "description": "A page to show. Omit to show where reading left off."},
+            },
+        },
+    },
+    {
         "name": "search_sources",
         "description": (
             "Search the notebook's sources for passages relevant to a question. Call this BEFORE answering any "
@@ -209,6 +228,23 @@ class NotebookTools:
               "snippet": passage["text"][:240]}
         return ToolOutcome(result, ui)
 
+    def open_source(self, source: str | None = None, page: int | None = None) -> ToolOutcome:
+        doc_id = self.resolve_source(source)
+        lesson = self.cache.get(doc_id).lesson
+        outline = lesson.outline(max_level=1)
+        position = outline["position"]
+        last = outline["pages"] or 1
+        if page is not None:
+            page = int(page)
+            if not 1 <= page <= last:
+                raise LessonError(f"{self._title(doc_id)} has pages 1 to {last}; there's no page {page}.")
+        else:
+            page = int(position["pages"].split("-")[0]) if position.get("started") else 1
+        self._set_active(doc_id)
+        result = {"opened": self._title(doc_id), "source_number": self._number(doc_id), "showing_page": page,
+                  "pages": last, "reading_position": position, "sections": outline["sections"]}
+        return ToolOutcome(result, {"kind": "open", "doc_id": doc_id, "page": page})
+
     def search_sources(self, query: str, source: str | None = None, top_k: int = 5) -> ToolOutcome:
         top_k = max(1, min(int(top_k or 5), 8))
         doc_ids = [self.resolve_source(source)] if source else self.doc_ids
@@ -270,6 +306,7 @@ class NotebookTools:
         handler = {
             "get_outline": self.get_outline,
             "read_passage": self.read_passage,
+            "open_source": self.open_source,
             "search_sources": self.search_sources,
             "web_search": self.web_search,
         }.get(name)

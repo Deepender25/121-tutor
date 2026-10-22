@@ -22,6 +22,7 @@ import { openSettings } from "../Settings";
 export const TOOL_LABELS: Record<string, (a: Record<string, unknown>) => [string, string]> = {
   get_outline: () => ["list", "Checking the outline"],
   read_passage: (a) => ["book", passageLabel(String(a.target || "next").trim())],
+  open_source: (a) => ["file", a.page ? `Opening page ${a.page}` : "Opening the source"],
   search_sources: (a) => ["search", `Searching your sources for “${a.query || ""}”`],
   web_search: (a) => ["globe", `Searching the web for “${a.query || ""}”`],
 };
@@ -482,11 +483,13 @@ export function createNotebookController(initial: Notebook) {
             acts: x.acts.map((a) => (a.key !== key ? a : {
               ...a, running: false, error: msg.error || null, ui: msg.ui || null,
               // a web search now says which service answered ("Searched the web with TinyFish for …")
-              label: msg.ui?.kind === "web" ? plain(refLabel(msg.ui)[1]) : a.label,
+              label: msg.ui?.kind === "web" ? plain(refLabel(msg.ui)[1])
+                : msg.ui?.kind === "open" ? openedLabel(msg.ui) : a.label,
             })),
           }));
         }
         if (msg.ui?.kind === "passage") onPassage(msg.ui);
+        if (msg.ui?.kind === "open") onOpen(msg.ui);
         if (!S.toolsPending.size) patch("stage", { activity: msg.ui?.kind === "passage" ? `${plain(msg.ui.section)} · p. ${msg.ui.pages}` : "" });
         paintVoice();
         break;
@@ -771,8 +774,20 @@ export function createNotebookController(initial: Notebook) {
   }
 
   function onPassage(ui: Extract<ToolUI, { kind: "passage" }>) {
-    if (ui.doc_id !== nb.active_source) setNb({ ...nb, active_source: ui.doc_id });
+    if (ui.doc_id !== nb.active_source) { setNb({ ...nb, active_source: ui.doc_id }); loadOutline(); }
     refreshProgressSoon();
+  }
+
+  // The tutor switched sources (or pages) because they asked: both panels follow.
+  async function onOpen(ui: Extract<ToolUI, { kind: "open" }>) {
+    if (ui.doc_id !== nb.active_source) { setNb({ ...nb, active_source: ui.doc_id }); await loadOutline(); }
+    showPage(ui.doc_id, ui.page);
+    revealViewer();
+  }
+
+  function openedLabel(ui: Extract<ToolUI, { kind: "open" }>) {
+    const src = nb.sources.find((s) => s.doc_id === ui.doc_id);
+    return `Opened ${plain(src?.title) || "the source"} · p. ${ui.page}`;
   }
 
   function openCitation(docId: string, page: number, snippet: string) {

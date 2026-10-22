@@ -34,6 +34,7 @@ export interface WebLink {
 export type ToolUI =
   | { kind: "search"; query: string; refs: SearchRef[] }
   | { kind: "passage"; doc_id: string; page: number; pages: string; section: string; position: string; snippet: string }
+  | { kind: "open"; doc_id: string; page: number }
   | { kind: "web"; query: string; links: WebLink[]; via?: string } // via: the service that answered (TinyFish, ...)
   | { kind: "error"; message: string };
 

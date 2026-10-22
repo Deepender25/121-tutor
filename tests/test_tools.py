@@ -85,3 +85,24 @@ def test_search_results_drop_the_overlap_from_the_previous_chunk(healthy):
     by_page = {r["pages"]: r["text"] for r in out.result["results"]}
     assert all(not text.startswith(OVERLAP) for text in by_page.values())
     assert not any(ref["snippet"].startswith("the end of the previous") for ref in out.ui["refs"])
+
+
+def test_open_source_switches_the_active_source_and_shows_a_page(healthy):
+    switched = []
+    tools = NotebookTools(FakeCache({"good": healthy, "other": healthy}), FakeEmbedder(), ["other", "good"], "other",
+                          switched.append)
+    out = tools.call("open_source", {"source": "2", "page": 3})
+    assert out.result["opened"] == "Rain Guide" and out.result["showing_page"] == 3 and out.result["pages"] == 3
+    assert out.result["sections"] and out.result["reading_position"] == {"started": False}
+    assert out.ui == {"kind": "open", "doc_id": "good", "page": 3}
+    assert tools.active == "good" and switched == ["good"]
+    # no page: where reading left off, else page 1; the reading position doesn't move
+    healthy.lesson.read("page:2")
+    assert tools.call("open_source", {"source": "2"}).ui["page"] == 2
+    assert healthy.lesson.position()["pages"] == "2"
+
+
+def test_open_source_rejects_a_page_that_isnt_there(healthy):
+    tools = tools_for(healthy, "good")
+    out = tools.call("open_source", {"page": 99})
+    assert "pages 1 to 3" in out.result["error"] and out.ui["kind"] == "error"
