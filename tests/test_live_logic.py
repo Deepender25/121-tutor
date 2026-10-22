@@ -399,3 +399,55 @@ def test_embedding_crash_explanations(monkeypatch):
     assert "0xC0000005" in worker.describe_crash(-1073741819, info)  # access violation, plenty of memory
     monkeypatch.setattr(worker, "memory_mb", lambda: (4000, 600))
     assert "ran out of memory" in worker.describe_crash(-1073741819, info)  # same crash, almost no free memory
+
+
+def _tone(db: float, n: int = 1600, seed: int = 0) -> bytes:
+    import numpy as np
+    rms = 32767 * 10 ** (db / 20)
+    return np.clip(np.random.default_rng(seed).normal(0, rms, n), -32768, 32767).astype(np.int16).tobytes()
+
+
+def test_mic_meter_tells_how_long_after_they_went_quiet_the_reply_came():
+    from tutor.server.live import MicMeter
+    m = MicMeter()
+    t = 0.0
+    for _ in range(5):  # a mic that starts with zeros: not the room's level
+        t += 0.1
+        m.chunk(bytes(3200), t)
+    assert m.floor is None
+    for _ in range(20):  # two seconds of a quiet room
+        t += 0.1
+        m.chunk(_tone(-60), t)
+    for _ in range(15):  # talking
+        t += 0.1
+        m.chunk(_tone(-25), t)
+    talked_until = t
+    for i in range(30):  # quiet again: the room level didn't drift up to the voice
+        t += 0.1
+        m.chunk(_tone(-60, seed=i), t)
+        assert not m.stuck(t) or t - talked_until >= MicMeter.STUCK_S
+    assert abs(m.floor - -60) < 3
+    assert m.stuck(t + 3) and not m.stuck(t + 4)  # 5 s after they went quiet, said once
+    note = m.replied(talked_until + 1.2)
+    assert "you went quiet 1.2s before" in note and "room -6" in note
+    assert m.replied(t) == ""  # no talking since that reply
+
+
+def test_mic_meter_ignores_the_tutors_voice_and_slow_tools():
+    from tutor.server.live import MicMeter
+    m = MicMeter()
+    t = 0.0
+    for _ in range(10):
+        t += 0.1
+        m.chunk(_tone(-60), t)
+    m.tutor_audio(48000 * 3, t)  # three seconds of reply audio: the mic hears it come back
+    for _ in range(20):
+        t += 0.1
+        m.chunk(_tone(-30), t)
+    assert not m.spoke
+    m.tutor_stopped(t)  # they interrupted: what the mic hears now is them
+    t += 0.6
+    m.chunk(_tone(-30), t)
+    assert m.spoke
+    m.taken()  # a web search started: a long wait for the reply now isn't a stuck turn
+    assert not m.stuck(t + 10)

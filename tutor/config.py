@@ -79,7 +79,11 @@ LIVE_MODEL = os.environ.get("VOICE_TUTOR_LIVE_MODEL", "gemini-3.8-live")
 # Voice activity detection: how long a pause ends your turn. Higher = you can pause to think mid-sentence
 # without the tutor jumping in (costs that much extra delay before each reply).
 VAD_SILENCE_MS = _int_env("VOICE_TUTOR_VAD_SILENCE_MS", 1000)
-VAD_END_SENSITIVITY = _choice_env("VOICE_TUTOR_VAD_END_SENSITIVITY", "low", ("low", "high"))
+# How readily Gemini decides you've finished once you go quiet. "low" sometimes kept waiting with faint room noise
+# on the mic: the tutor didn't answer for seconds (measured with recorded questions: 3 of 16 replies took 4-8 s with
+# low, 0 of 26 with high, all within a second). Pauses mid-sentence still don't end your turn: that's
+# VAD_SILENCE_MS (0.6 and 0.9 s pauses were never cut off, with either setting).
+VAD_END_SENSITIVITY = _choice_env("VOICE_TUTOR_VAD_END_SENSITIVITY", "high", ("low", "high"))
 # How readily sound counts as you starting to talk (which interrupts the tutor). "low": a clear voice still does,
 # but the tutor's own voice coming back through a phone speaker, or background noise, doesn't cut it off.
 VAD_START_SENSITIVITY = _choice_env("VOICE_TUTOR_VAD_START_SENSITIVITY", "low", ("low", "high"))

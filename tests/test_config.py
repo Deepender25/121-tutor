@@ -34,3 +34,10 @@ def test_sensitivity_is_case_insensitive_and_defaults_stay(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["low", "high", "300"]  # empty means the default (prefix 300 ms)
 
+
+
+def test_the_tutor_answers_promptly_by_default(tmp_path):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VOICE_TUTOR_VAD_")}
+    result = subprocess.run([sys.executable, "-c", "import tutor.config as c; print(c.VAD_END_SENSITIVITY)"], cwd=ROOT,
+                            capture_output=True, text=True, timeout=60, env={**env, "VOICE_TUTOR_DATA": str(tmp_path)})
+    assert result.stdout.split() == ["high"], result.stderr

@@ -829,3 +829,26 @@ passages it reads don't move the viewer. When `read_passage` itself changes sour
 (before, the left panel highlighted the new source but kept the old outline). Checked live: switching to unit 2,
 page 5 of it, back to unit 1 then teaching its first topic, and "Dusri PDF kholo"; and in the browser, both panels
 followed "Switch to the first PDF and show me page 4".
+
+## 35. Replies that didn't come: the end-of-speech setting (2026-10-22)
+
+**Symptom**: sometimes after one reply, the next thing said got no answer for many seconds (14 s in one session
+at 13:33 on 2026-10-22, with the laptop's mic array). The log showed the audio reaching the server and Gemini; the
+browser was running and visible, no stalls; Gemini sent the transcript of what was said only when it finally
+answered. So Gemini hadn't decided the person had finished.
+
+**Measured** (a recorded question streamed to Gemini Live at real time, then 25 s of what the mic would send after
+it; `scratchpad/vad/vad_test.py` in the session that did this): with digital silence after the question, replies
+start in about 1 s. With faint room noise (-60 to -50 dBFS of white noise) and end-of-speech sensitivity **low**
+(the setting then), 3 of 16 replies took 4.2-7.6 s; with **high**, 0 of 26, all 0.6-1.0 s. Louder noise (-45 to
+-35 dBFS) didn't cause waits with either. Questions with a 0.6 s or 0.9 s pause mid-sentence were never cut off with
+either setting (the 1 s `VAD_SILENCE_MS` governs pauses). So the default is now **high**
+(`VOICE_TUTOR_VAD_END_SENSITIVITY`). Checked end to end through the local server: replies 1.4-2.0 s after speaking,
+including a search of the PDF.
+
+**Evidence next time** (`MicMeter` in `tutor/server/live.py`): the server measures the mic level of the audio it
+forwards (the room's level, and when the person's voice stopped; the tutor's own voice coming back is ignored while
+its reply plays, and digital silence isn't the room). Each reply's log line now says how long after the person went
+quiet it started, and the room level ("Reply audio started 0.50s after your input (you went quiet 2.1s before; room
+-55 dBFS)"); and when someone talked, went quiet for 5 s and nothing came back (no reply, no tool call), a warning
+says so with the room level. A loud room means noise kept Gemini waiting; a quiet one points at the connection.

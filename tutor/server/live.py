@@ -16,6 +16,8 @@ import logging
 import time
 import wave
 
+import numpy as np
+
 from fastapi import WebSocket, WebSocketDisconnect
 
 from tutor import config
@@ -23,7 +25,7 @@ from tutor.intent import wants_web_search
 from tutor.logs import short
 from tutor.server.state import AppState
 from tutor.tools import NotebookTools
-from tutor.voice.base import VoiceEvent
+from tutor.voice.base import OUTPUT_SAMPLE_RATE, VoiceEvent
 from tutor.voice.gemini_live import GeminiLiveSession
 from tutor.voice.prompt import build_system_prompt
 
@@ -45,6 +47,75 @@ def join_text(previous: str, piece: str) -> str:
     if previous and piece and not previous[-1].isspace() and not piece[0].isspace() and previous[-1] in ".!?,;:":
         return previous + " " + piece
     return previous + piece
+
+
+class MicMeter:
+    """The mic level, from the audio the browser sends, so the log can say why a reply was slow: Gemini answers once
+    it decides you've finished, and this shows how long after you actually went quiet that was, and how loud the
+    room was meanwhile (noise can keep it waiting; a quiet room and a long wait points at the connection)."""
+
+    SPEECH_DB = 12  # this far above the room's level counts as talking
+    FLOOR_RISE_DB_S = 2.0  # the room level follows a louder room slowly, so speech doesn't become "the room"
+    STUCK_S = 5.0  # quiet this long after talking, with no reply: worth a line in the log
+    SILENT_DB = -90.0  # below this the mic is sending zeros, not sound
+
+    def __init__(self):
+        self.floor: float | None = None  # room level, dBFS
+        self.voice_at: float | None = None  # when the last chunk that sounded like talking arrived
+        self.spoke = False  # talked since the last reply started
+        self.warned = False
+        self.tutor_until = 0.0  # when the tutor's reply audio sent so far ends playing: the mic then is mostly echo
+        self._last = time.monotonic()
+
+    def tutor_audio(self, nbytes: int, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        self.tutor_until = max(self.tutor_until, now) + nbytes / (OUTPUT_SAMPLE_RATE * 2)
+
+    def tutor_stopped(self, now: float | None = None) -> None:
+        self.tutor_until = time.monotonic() if now is None else now
+
+    def chunk(self, pcm: bytes, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        x = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype=np.int16).astype(np.float32)
+        if not x.size:
+            return
+        db = 20 * np.log10(np.sqrt(np.mean(x * x)) / 32768 + 1e-9)
+        dt, self._last = now - self._last, now
+        if now < self.tutor_until + 0.5:  # the tutor is talking: what the mic hears is mostly its voice
+            return
+        if db < self.SILENT_DB:  # digital silence (a muted or starting mic), not the room
+            return
+        if self.floor is None or db < self.floor:
+            self.floor = db
+        else:
+            self.floor = min(db, self.floor + self.FLOOR_RISE_DB_S * max(dt, 0.0))
+        if db > self.floor + self.SPEECH_DB:
+            self.voice_at = now
+            self.spoke = True
+            self.warned = False
+
+    def quiet_for(self, now: float | None = None) -> float | None:
+        return None if self.voice_at is None else (time.monotonic() if now is None else now) - self.voice_at
+
+    def stuck(self, now: float | None = None) -> bool:
+        """True once per turn: they talked, went quiet STUCK_S ago, and no reply has started."""
+        quiet = self.quiet_for(now)
+        if self.spoke and not self.warned and quiet is not None and quiet >= self.STUCK_S:
+            self.warned = True
+            return True
+        return False
+
+    def taken(self) -> None:
+        """Gemini took the turn without speaking yet (a tool call): a slow tool isn't a stuck turn."""
+        self.spoke = False
+
+    def replied(self, now: float | None = None) -> str:
+        """Called when a reply starts: a note for the log about the turn that led to it ('' if they didn't talk)."""
+        quiet = self.quiet_for(now)
+        note = (f" (you went quiet {quiet:.1f}s before; room {self.floor:.0f} dBFS)"
+                if self.spoke and quiet is not None and self.floor is not None else "")
+        self.spoke = False
+        return note
 
 
 class WebSearchGuard:
@@ -271,6 +342,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
              len(notebook.sources), "" if len(notebook.sources) == 1 else "s", voice, config.LIVE_MODEL,
              "/".join(style.values()))
     timing = {"input_at": None}  # when the user's latest input arrived, for reply-latency logging
+    meter = MicMeter()
     interruptions = [0]  # replies cut off by (what Gemini heard as) the person talking: echo shows up here
     tape = AudioTape(notebook.name) if config.RECORD_AUDIO else None
     if tape:
@@ -286,8 +358,11 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
     async def emit(event: VoiceEvent) -> None:
         if event.kind == "audio":
             if timing["input_at"] is not None:
-                log.info("Reply audio started %.2fs after your input", time.perf_counter() - timing["input_at"])
+                log.info("Reply audio started %.2fs after your input%s", time.perf_counter() - timing["input_at"],
+                         meter.replied())
                 timing["input_at"] = None
+            else:
+                meter.replied()
             if outgoing.full():  # browser not keeping up: drop audio rather than block the session
                 log.warning("Dropped %d bytes of reply audio: the browser isn't keeping up", len(event.audio))
                 if tape:
@@ -295,6 +370,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
                 return
             if tape:
                 tape.tutor(event.audio)
+            meter.tutor_audio(len(event.audio))
             outgoing.put_nowait(event.audio)
             return
         if tape and event.kind in ("transcript", "interrupted", "turn_complete", "tool_call", "error"):
@@ -309,11 +385,13 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
                 guard.model_output()
         elif event.kind == "interrupted":
             interruptions[0] += 1
+            meter.tutor_stopped()
             log.info("Reply interrupted (Gemini heard speech)")
             if recorder.pending:  # the old reply is over: what was typed during it starts the next exchange
                 recorder.flush()
         elif event.kind == "tool_call":
             guard.tool_called(event.data.get("name", ""))
+            meter.taken()
         elif event.kind == "tool_result":
             recorder.ref(event.data.get("ui"))
         elif event.kind == "turn_complete":
@@ -383,6 +461,11 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
         if msg.get("bytes") is not None:
             if tape:
                 tape.mic(msg["bytes"])
+            meter.chunk(msg["bytes"])
+            if meter.stuck():
+                log.warning("No reply yet: you went quiet %.0fs ago (room %.0f dBFS). Gemini answers when it decides "
+                            "you've finished; a quiet room and no answer points at the connection", meter.quiet_for(),
+                            meter.floor)
             await session.send_audio(msg["bytes"])
             return True
         try:
