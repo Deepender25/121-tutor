@@ -185,18 +185,18 @@ Use the link button in Sources, or "Add from a link" on an empty notebook, and p
 ## Architecture
 
 ```mermaid
-flowchart LR
-    S([Student: voice or text]) --> UI[Next.js interface<br/>port 8765]
-    UI <-->|"WebSocket: audio, transcripts, events"| API[FastAPI server<br/>port 8766]
-    API <-->|"live audio, function calls"| G[Gemini Live<br/>native audio]
+flowchart TB
+    S([Student: voice or text]) --> UI[Next.js interface]
+    UI <-->|"WebSocket: audio, transcripts, events"| API[FastAPI server]
+    API <-->|"live audio, function calls"| G[Gemini Live, native audio]
     API --> T{{Tutor tools}}
-    T -->|"search_sources, read_passage,<br/>get_outline, open_source"| R[(LanceDB<br/>vectors + full text)]
+    T -->|"search_sources, read_passage,<br/>get_outline, open_source"| R[(LanceDB: vectors + full text)]
     T -->|web_search| WS[Web research]
     WS --> TS[TinyFish Search]
     WS --> TF[TinyFish Fetch]
+    P[PDF upload] --> IX[Parse and index]
     L[Add from a link] --> TF
-    P[PDF upload] --> IX[Parse and index<br/>PyMuPDF, pymupdf4llm]
-    TF --> IX
+    TF -->|web page as a source| IX
     IX --> R
 ```
 
