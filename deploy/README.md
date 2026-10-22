@@ -1,5 +1,11 @@
 # Hosting Voice Tutor: frontend on Vercel, API on a VPS
 
+> **Status (2026-10-22): the hosted copy is switched off.** The Vercel project is paused and
+> `frontend/vercel.json` turns off deploys from GitHub (`"git": {"deploymentEnabled": false}`); the API service on
+> the VPS is stopped and disabled, and the VPS doesn't pull from GitHub. Run the app locally with `run.bat`. To host
+> it again: remove that `git` setting, unpause the Vercel project, then on the VPS run
+> `sudo systemctl enable --now voice-tutor-api voice-tutor-backup.timer` and `sudo voice-tutor update`.
+
 The same code runs locally (`run.bat`, no login, unchanged) and hosted. Hosting is switched on only by settings:
 
 ```
