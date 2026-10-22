@@ -104,6 +104,8 @@ export const api = {
     for (const f of files) form.append("files", f, f.name);
     return uploadForm<{ jobs: Job[] }>(`/api/notebooks/${id}/sources`, form, onProgress);
   },
+  // A PDF file on the web, or a web page (read with TinyFish on the server): queued like an upload.
+  addLink: (id: string, url: string) => request<{ jobs: Job[] }>("POST", `/api/notebooks/${id}/sources/link`, { url }),
   removeSource: (id: string, docId: string) => request<null>("DELETE", `/api/notebooks/${id}/sources/${docId}`),
   job: (jobId: string) => request<Job>("GET", `/api/jobs/${jobId}`),
   dismissJob: (jobId: string) => request<null>("DELETE", `/api/jobs/${jobId}`),

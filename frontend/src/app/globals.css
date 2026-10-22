@@ -549,6 +549,8 @@ input.field:focus, textarea.field:focus { border-color: var(--ink); box-shadow: 
 }
 .add-source:hover { border-color: var(--ink); background: var(--accent-soft); color: var(--ink); }
 .add-source b { display: block; color: var(--ink); font-weight: 600; font-size: 13.5px; }
+.head-actions { display: inline-flex; align-items: center; gap: 4px; }
+.empty-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .add-ic { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--surface); border: 1px solid var(--border-strong); color: var(--ink); flex: none; }
 
 .outline-wrap { border-top: 1px solid var(--border); display: flex; flex-direction: column; margin-top: 6px; }

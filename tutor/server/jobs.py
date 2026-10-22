@@ -1,6 +1,6 @@
 """Background jobs with progress, one at a time (embedding is CPU-bound locally, rate-limited online).
 
-kind "ingest": a PDF being added to a notebook. kind "reindex": an existing document getting vectors for the current
+kind "ingest": a PDF being added to a notebook (uploaded, or from a link: stage "fetching" gets it first). kind "reindex": an existing document getting vectors for the current
 embedding model after EMBEDDING_MODEL changed; it shows in every notebook that has the document."""
 
 import logging
@@ -14,7 +14,7 @@ from typing import Callable
 
 log = logging.getLogger("jobs")
 
-STAGE_WEIGHTS = {"queued": (0, 0), "parsing": (0, 15), "chunking": (15, 20), "embedding": (20, 95),
+STAGE_WEIGHTS = {"queued": (0, 0), "fetching": (0, 0), "parsing": (0, 15), "chunking": (15, 20), "embedding": (20, 95),
                  "saving": (95, 99), "done": (100, 100)}
 REINDEX_WEIGHTS = {**STAGE_WEIGHTS, "embedding": (0, 95)}  # no parsing: straight to embedding
 

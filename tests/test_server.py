@@ -374,3 +374,90 @@ def test_expected_4xx_stay_out_of_the_error_log(client, notebook, caplog):
 def test_page_scale_that_is_not_a_number(client, notebook):
     r = client.get(f"/api/docs/{notebook['doc_id']}/page/1.png?scale=nan")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+
+
+# ---- adding a source from a link (tutor/web_source.py; TinyFish and the network faked)
+
+LINK_PAGE = ("<h1>Leaf structure</h1><p>The palisade layer holds most chloroplasts, which capture light.</p>"
+             "<h2>Stomata</h2><p>Guard cells open and close the stomata to exchange gases with the air.</p>")
+
+
+def wait_job(client, job_id: str) -> dict:
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            return job
+        time.sleep(0.3)
+    raise AssertionError("job timed out")
+
+
+def test_add_from_link_refuses_bad_addresses(client, notebook):
+    url = f"/api/notebooks/{notebook['id']}/sources/link"
+    r = client.post(url, json={"url": "http://127.0.0.1:8766/api/status"})
+    assert r.status_code == 400 and "private network" in r.json()["detail"]
+    r = client.post(url, json={"url": "leaves.example"})
+    assert r.status_code == 400 and "http" in r.json()["detail"]
+    assert client.post("/api/notebooks/nope/sources/link", json={"url": "https://example.com"}).status_code == 404
+
+
+def test_add_a_web_page_from_a_link(client, monkeypatch):
+    from tutor import web_source
+
+    nb = client.post("/api/notebooks", json={"name": "Links"}).json()
+    monkeypatch.setattr(web_source, "check_public", lambda url: url.strip())
+    monkeypatch.setattr(web_source, "download_pdf", lambda url, limit: None)  # not a PDF: a web page
+    monkeypatch.setattr(web_source, "page_to_pdf",
+                        lambda url: (web_source.html_to_pdf(LINK_PAGE, "Leaf structure", url), "Leaf structure"))
+    r = client.post(f"/api/notebooks/{nb['id']}/sources/link", json={"url": "https://leaves.example/biology"})
+    assert r.status_code == 202, r.text
+    queued = r.json()["jobs"][0]
+    assert queued["file_name"] == "leaves.example/biology"
+    job = wait_job(client, queued["id"])
+    assert job["status"] == "done", job
+    assert job["file_name"] == "Leaf structure" and job["title"] == "Leaf structure"
+    [source] = client.get(f"/api/notebooks/{nb['id']}").json()["sources"]
+    assert source["doc_id"] == job["doc_id"]
+    outline = client.get(f"/api/docs/{job['doc_id']}/outline").json()
+    assert [s["title"] for s in outline["sections"]] == ["Leaf structure", "Stomata"]
+    refs = client.get(f"/api/notebooks/{nb['id']}/search", params={"q": "guard cells stomata"}).json()["refs"]
+    assert refs and "Guard cells" in refs[0]["snippet"]
+    client.delete(f"/api/notebooks/{nb['id']}")
+
+
+def test_a_link_that_cant_be_read_fails_with_its_reason(client, monkeypatch):
+    from tutor import web_source
+
+    nb = client.post("/api/notebooks", json={"name": "Links 2"}).json()
+    monkeypatch.setattr(web_source, "check_public", lambda url: url.strip())
+    monkeypatch.setattr(web_source, "download_pdf", lambda url, limit: None)
+
+    def blocked(url):
+        raise web_source.LinkError("The site blocked automated reading of this page.")
+
+    monkeypatch.setattr(web_source, "page_to_pdf", blocked)
+    job_id = client.post(f"/api/notebooks/{nb['id']}/sources/link", json={"url": "https://x.example/a"}).json()["jobs"][0]["id"]
+    job = wait_job(client, job_id)
+    assert job["status"] == "error" and job["error"] == "The site blocked automated reading of this page."
+    assert client.get(f"/api/notebooks/{nb['id']}").json()["sources"] == []
+    client.delete(f"/api/notebooks/{nb['id']}")
+
+
+def test_a_pdf_link_keeps_its_name_as_the_title(client, monkeypatch):
+    import pymupdf
+
+    from tutor import web_source
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Attention is all you need. Self-attention relates positions of a sequence.")
+    page.insert_text((72, 100), "Multi-head attention lets the model attend to different subspaces at once.")
+    data = doc.tobytes()  # no title in its metadata: the title comes from the link's file name
+    nb = client.post("/api/notebooks", json={"name": "Papers"}).json()
+    monkeypatch.setattr(web_source, "check_public", lambda url: url.strip())
+    monkeypatch.setattr(web_source, "download_pdf", lambda url, limit: data)
+    r = client.post(f"/api/notebooks/{nb['id']}/sources/link", json={"url": "https://arxiv.example/pdf/1706.03762"})
+    job = wait_job(client, r.json()["jobs"][0]["id"])
+    assert job["status"] == "done", job
+    assert job["file_name"] == "1706.03762" and job["title"] == "1706.03762"  # not cut at the dot to "1706"
+    client.delete(f"/api/notebooks/{nb['id']}")

@@ -14,7 +14,7 @@ import { PdfView } from "@/lib/pdf-view";
 import { refreshStatus, statusStore } from "@/lib/status";
 import { createStore } from "@/lib/store";
 import type { HistoryEntry, Job, Notebook, Outline, OutlineSection, ToolUI } from "@/lib/types";
-import { confirmDialog, openMenu, toast } from "../overlays";
+import { confirmDialog, openMenu, promptDialog, toast } from "../overlays";
 import { openSettings } from "../Settings";
 
 // ---------------------------------------------------------------- labels
@@ -46,7 +46,7 @@ function passageLabel(target: string): string {
 
 export function refLabel(ref: ToolUI): [string, string] {
   if (ref.kind === "search") return ["search", `Searched your sources for “${ref.query}”`];
-  if (ref.kind === "web") return ["globe", `Searched the web for “${ref.query}”`];
+  if (ref.kind === "web") return ["globe", `Searched the web${ref.via ? ` with ${ref.via}` : ""} for “${ref.query}”`];
   if (ref.kind === "passage") return ["book", "Read"];
   return ["sparkles", ""];
 }
@@ -71,6 +71,7 @@ export function jobStageText(j: Job): string {
     // switched embedding model: the stored text gets new vectors; keyword search works meanwhile
     return j.stage === "embedding" ? `Updating search · ${j.done} of ${j.total}` : j.stage === "saving" ? "Saving…" : "Updating search…";
   }
+  if (j.stage === "fetching") return "Getting the page…"; // a link: downloading it, or reading it with TinyFish
   if (j.stage === "parsing") return `Reading the PDF… ${clock(j.stage_seconds || 0)}`; // slow on a small server
   if (j.stage === "chunking") return "Finding sections…";
   if (j.stage === "embedding") return `Indexing ${j.done} of ${j.total}`;
@@ -478,7 +479,11 @@ export function createNotebookController(initial: Notebook) {
         if (S.model && key) {
           patchMsg(S.model.id, (x) => ({
             ...x,
-            acts: x.acts.map((a) => (a.key !== key ? a : { ...a, running: false, error: msg.error || null, ui: msg.ui || null })),
+            acts: x.acts.map((a) => (a.key !== key ? a : {
+              ...a, running: false, error: msg.error || null, ui: msg.ui || null,
+              // a web search now says which service answered ("Searched the web with TinyFish for …")
+              label: msg.ui?.kind === "web" ? plain(refLabel(msg.ui)[1]) : a.label,
+            })),
           }));
         }
         if (msg.ui?.kind === "passage") onPassage(msg.ui);
@@ -636,6 +641,22 @@ export function createNotebookController(initial: Notebook) {
   // ================================================================ uploads
 
   function pickFiles() { (els.fileInput as HTMLInputElement | undefined)?.click(); }
+
+  // A web page (read with TinyFish on the server and laid out as a PDF) or a link straight to a PDF file.
+  async function addLink() {
+    const url = await promptDialog({
+      title: "Add from a link",
+      body: "Paste the address of a web page or a PDF file. A web page is read with TinyFish and added like a PDF, with its headings as the outline.",
+      placeholder: "https://…",
+      confirm: "Add",
+    });
+    if (!url?.trim()) return;
+    try {
+      const { jobs } = await api.addLink(id, url.trim());
+      store.set((s) => ({ jobs: [...s.jobs, ...jobs] }));
+      pollJobs();
+    } catch (e) { toast((e as Error).message, "error", 6000); }
+  }
 
   async function upload(files: File[]) {
     const pdfs = files.filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
@@ -1151,7 +1172,7 @@ export function createNotebookController(initial: Notebook) {
     toggleMic: () => live?.toggleMic(),
     endLive: () => live?.end(),
     // sources & outline
-    pickFiles, upload, removeSource, dismissJob, setActive, teachSection, outlineMenu, rename, setCover,
+    pickFiles, upload, addLink, removeSource, dismissJob, setActive, teachSection, outlineMenu, rename, setCover,
     // viewer
     toggleViewer, setTab, openCitation, goToPage, prevPage, nextPage, zoomIn, zoomOut, fitWidth, viewerPointer,
     currentPage: () => pdf?.page ?? null,

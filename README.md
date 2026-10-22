@@ -46,6 +46,41 @@ Pages have real addresses: `http://127.0.0.1:8765/` (your notebooks) and
 `http://127.0.0.1:8765/notebooks/<id>` (one notebook), so the browser's Back/Forward buttons, bookmarks
 and new tabs all work.
 
+### Web search and TinyFish
+
+The tutor checks the web when your sources don't cover something, or when you ask it to ("search the internet
+for…"), and always says which answer came from your notes (with the page) and which from the web (with the site).
+Pick the service with `WEB_SEARCH` in `.env`:
+
+| `WEB_SEARCH=` | What happens | Needs |
+|---|---|---|
+| `tinyfish` | **TinyFish Search** finds pages; **TinyFish Fetch** then opens the top 3 in a real browser and returns clean text, and the tutor answers from the most relevant paragraphs of those pages, not one-line snippets. Also lets you add any **web page as a source** (below) | `TINYFISH_API_KEY` ([get one](https://agent.tinyfish.ai/api-keys); Search and Fetch have a free daily allowance) |
+| `tavily` | Tavily search snippets | `TAVILY_API_KEY` |
+| `duckduckgo` | DuckDuckGo search snippets | nothing |
+| *(empty)* | Tavily if `TAVILY_API_KEY` is set, otherwise DuckDuckGo (the behaviour before this setting existed) | |
+
+If the chosen service fails (no internet, a daily limit), the next available one answers (TinyFish, then Tavily, then
+DuckDuckGo), and the tutor is told which one did. Settings › System shows the active service, and the conversation
+shows "Searched the web with TinyFish for …" with a chip for every site used.
+
+**How TinyFish is used, step by step**
+1. The voice model (Gemini Live) decides it needs the web and calls the app's `web_search` tool.
+2. `tutor/web.py` sends the question to **TinyFish Search** (`GET api.search.tinyfish.ai`, with a `purpose` saying
+   it's for a student's question), and gets ranked results: title, site, snippet, URL.
+3. It sends the top 3 URLs to **TinyFish Fetch** in one request (`POST api.fetch.tinyfish.ai`, Markdown, 12 s per
+   page), which renders them in a real browser, so pages that build their content with JavaScript work too.
+4. From each page it keeps the paragraphs that share the most words with the question (about 1,400 characters), and
+   gives those to the model as `content` next to each result's site and URL.
+5. The model answers out loud from that content, naming the site; your notes keep their page references.
+
+**Add from a link** (the link button in Sources, or "Add from a link" on an empty notebook): paste an address.
+- A link straight to a PDF file is downloaded and added as it is (works with any `WEB_SEARCH`).
+- A web page is read with **TinyFish Fetch** as clean HTML (menus, scripts and images dropped) and laid out as a PDF
+  whose outline is the page's headings (`tutor/web_source.py`). From there it's an ordinary source: outline, search,
+  page viewer, page citations, teaching in order. Its first line names the original address.
+- The server only downloads from public addresses (not this computer or a private network), checked again on
+  every redirect.
+
 ### Hosting it online (optional)
 
 The same code can also run as a website you sign in to from anywhere: the interface on Vercel and the Python API
@@ -99,7 +134,9 @@ Run `python app.py --debug` to see everything in the API window too.
   indexing, and the new source appears the moment it's ready.
 - **Phones**: the layout switches to Sources / Chat / Page tabs; pinch to zoom the PDF; every control works by
   touch; the screen stays on while the app is open.
-- **Web research** via Tavily when `TAVILY_API_KEY` is set in `.env`, otherwise DuckDuckGo (free, no key).
+- **Web research** with TinyFish (search, then the top pages read in a real browser), Tavily or DuckDuckGo:
+  `WEB_SEARCH` in `.env` (see [Web search and TinyFish](#web-search-and-tinyfish)).
+- **Add from a link**: a web page (read with TinyFish) or a PDF file on the web becomes a source like any PDF.
 
 ## Where things live
 
@@ -137,7 +174,9 @@ delete `frontend\node_modules` and `frontend\.next`. Ports can be changed in `.e
 
 PDF parsing, indexing and search run on your computer. The voice model is Gemini Live: what you say and
 the passages it reads are sent to Google, and on the free tier Google may use them to improve its
-products. With `EMBEDDING_MODEL=online`, your PDFs' text is also sent to Google to be indexed.
+products. With `EMBEDDING_MODEL=online`, your PDFs' text is also sent to Google to be indexed. Web searches go
+to the service you chose with `WEB_SEARCH` (the question, and with TinyFish the addresses of the pages it reads);
+"Add from a link" sends the address to TinyFish when it's a web page.
 
 Even locally, the API refuses requests that change anything when they come from another website (so a page you
 visit can't drive the app behind your back), and the pages carry a strict Content Security Policy.

@@ -9,12 +9,14 @@ import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
-from tutor import config, web
+from tutor import config, web, web_source
 from tutor.library import DocumentError, delete_document, doc_id_for, ingest, read_meta
 from tutor.notebooks import COVERS as NOTEBOOK_COVERS
 from tutor.notebooks import ICONS as NOTEBOOK_ICONS
@@ -40,6 +42,11 @@ async def lifespan(_: FastAPI):
         raise RuntimeError(problem)
     state.start()
     log.info("Server ready. Data folder: %s", config.DATA_ROOT)
+    web_problem = web.choice()[1]
+    if web_problem:
+        log.error("Web search: %s", web_problem)
+    else:
+        log.info("Web search: %s", web.describe())
     if config.PUBLIC_ORIGINS:
         log.info("Hosted: login %s; accepting browser requests from %s", "on" if config.AUTH_ENABLED else "OFF",
                  ", ".join(config.PUBLIC_ORIGINS))
@@ -161,6 +168,8 @@ def status():
         "gemini_key": state.has_gemini_key(),
         "live_model": config.LIVE_MODEL,
         "web_provider": web.provider(),
+        "web_search": web.describe(),
+        "web_error": web.choice()[1],
         "voices": config.VOICES,
         "style_options": style_options(),
         "log_file": str(config.LOG_DIR / "voice-tutor.log"),
@@ -320,23 +329,73 @@ async def upload_sources(notebook_id: str, files: list[UploadFile]):
     return {"jobs": jobs}
 
 
+class LinkIn(BaseModel):
+    url: str
+
+
+@app.post("/api/notebooks/{notebook_id}/sources/link", status_code=202)
+async def add_link(notebook_id: str, body: LinkIn):
+    """Add a source from a link: a PDF file on the web, or a web page read with TinyFish (tutor/web_source.py)."""
+    _notebook_or_404(notebook_id)
+    try:
+        url = await asyncio.to_thread(web_source.check_public, body.url)
+    except web_source.LinkError as e:
+        raise HTTPException(400, str(e))
+    parts = urlparse(url)
+    name = (parts.hostname or "web page") + (parts.path if parts.path not in ("", "/") else "")
+    job = state.jobs.submit(notebook_id, name[:80], _link_work(notebook_id, url))
+    return {"jobs": [job.to_dict()]}
+
+
+def _link_work(notebook_id: str, url: str):
+    def work(job) -> None:
+        JobQueue.report(job, "fetching", 0, 1)
+        try:
+            data = web_source.download_pdf(url, config.MAX_UPLOAD_MB * 1024 * 1024)
+        except httpx.HTTPError as e:
+            raise web_source.LinkError(f"Couldn't download from that address ({e.__class__.__name__}).") from None
+        if data is not None:
+            name = Path(urlparse(url).path).name or job.file_name
+        else:
+            data, name = web_source.page_to_pdf(url)
+        job.file_name = name
+        # The title falls back to the file name minus its extension: make ".pdf" the extension, so "1706.03762" or a
+        # page called "Node.js guide" isn't cut at its dot.
+        file_name = name if name.lower().endswith(".pdf") else f"{name}.pdf"
+        part = config.FILES_DIR / f"link-{secrets.token_hex(6)}.part"
+        part.write_bytes(data)
+        doc_id = doc_id_for(part)
+        stored = config.FILES_DIR / f"{doc_id}.pdf"
+        if stored.exists():
+            part.unlink()
+        else:
+            shutil.move(str(part), stored)
+        _index_into(job, notebook_id, stored, file_name)
+    return work
+
+
 def _ingest_work(notebook_id: str, pdf: Path, display_name: str):
     def work(job) -> None:
-        embedder = state.require_embedder(timeout=600)
-        result = ingest(pdf, embedder, progress=lambda s, d, t: JobQueue.report(job, s, d, t),
-                        display_name=display_name, remember_current=False, log=log.debug, isolated_parse=True)
-        job.doc_id, job.title = result.doc_id, result.title
-        if state.cache:
-            state.cache.drop(result.doc_id)  # re-open with the fresh index
-        try:
-            state.notebooks.add_source(notebook_id, result.doc_id)
-        except KeyError:  # the notebook was deleted while this was indexing: don't leave an index nobody uses
-            if not state.notebooks.is_used(result.doc_id):
-                if state.cache:
-                    state.cache.drop(result.doc_id)
-                delete_document(result.doc_id)
-            log.info("The notebook was deleted while %s was being indexed; discarded it", display_name)
+        _index_into(job, notebook_id, pdf, display_name)
     return work
+
+
+def _index_into(job, notebook_id: str, pdf: Path, display_name: str) -> None:
+    """Index a stored PDF (an upload, or a link's PDF) and add it to the notebook."""
+    embedder = state.require_embedder(timeout=600)
+    result = ingest(pdf, embedder, progress=lambda s, d, t: JobQueue.report(job, s, d, t),
+                    display_name=display_name, remember_current=False, log=log.debug, isolated_parse=True)
+    job.doc_id, job.title = result.doc_id, result.title
+    if state.cache:
+        state.cache.drop(result.doc_id)  # re-open with the fresh index
+    try:
+        state.notebooks.add_source(notebook_id, result.doc_id)
+    except KeyError:  # the notebook was deleted while this was indexing: don't leave an index nobody uses
+        if not state.notebooks.is_used(result.doc_id):
+            if state.cache:
+                state.cache.drop(result.doc_id)
+            delete_document(result.doc_id)
+        log.info("The notebook was deleted while %s was being indexed; discarded it", display_name)
 
 
 @app.delete("/api/notebooks/{notebook_id}/sources/{doc_id}", status_code=204)

@@ -127,7 +127,10 @@ const SourcesPanel = memo(function SourcesPanel({ ctl }: { ctl: Ctl }) {
     <section className="panel sources" aria-label="Sources">
       <div className="panel-head">
         <h2>Sources<span className="count-badge">{nb.sources.length ? String(nb.sources.length) : ""}</span></h2>
-        <button className="btn sm" onClick={ctl.pickFiles}><Icon name="plus" className="sm" />Add</button>
+        <span className="head-actions">
+          <button className="icon-btn sm" aria-label="Add from a link" data-tip="Add from a link" onClick={ctl.addLink}><Icon name="link" className="sm" /></button>
+          <button className="btn sm" onClick={ctl.pickFiles}><Icon name="plus" className="sm" />Add</button>
+        </span>
       </div>
       <div className="panel-body scroll sources-body">
         <div className="sources-list">
@@ -141,7 +144,7 @@ const SourcesPanel = memo(function SourcesPanel({ ctl }: { ctl: Ctl }) {
                   <div className="title">{j.file_name}</div>
                   <div className="sub">{failed ? j.error : jobStageText(j)}</div>
                   {failed ? null : (
-                    <div className={`job-bar${j.stage === "queued" || j.stage === "parsing" || (j.stage === "uploading" && j.percent >= 100) ? " indeterminate" : ""}`}><i style={{ width: `${j.percent}%` }} /></div>
+                    <div className={`job-bar${j.stage === "queued" || j.stage === "fetching" || j.stage === "parsing" || (j.stage === "uploading" && j.percent >= 100) ? " indeterminate" : ""}`}><i style={{ width: `${j.percent}%` }} /></div>
                   )}
                 </div>
                 {failed ? <button className="icon-btn xs" aria-label="Dismiss" onClick={() => ctl.dismissJob(j.id)}><Icon name="x" className="sm" /></button> : null}
@@ -149,10 +152,16 @@ const SourcesPanel = memo(function SourcesPanel({ ctl }: { ctl: Ctl }) {
             );
           })}
           {nb.sources.length || jobs.length ? null : (
-            <button className="add-source" onClick={ctl.pickFiles}>
-              <span className="add-ic"><Icon name="upload" /></span>
-              <span><b>Add a PDF</b>Click, or drop files anywhere</span>
-            </button>
+            <>
+              <button className="add-source" onClick={ctl.pickFiles}>
+                <span className="add-ic"><Icon name="upload" /></span>
+                <span><b>Add a PDF</b>Click, or drop files anywhere</span>
+              </button>
+              <button className="add-source" onClick={ctl.addLink}>
+                <span className="add-ic"><Icon name="link" /></span>
+                <span><b>Add from a link</b>A web page or a PDF file</span>
+              </button>
+            </>
           )}
         </div>
         <OutlineBox ctl={ctl} />
@@ -367,7 +376,12 @@ function EmptyState({ ctl }: { ctl: Ctl }) {
         <div className="suggestions">
           {ideas.map(([ic, t]) => <button key={t} className="suggestion" onClick={() => ctl.sendText(t)}><Icon name={ic} className="sm" />{t}</button>)}
         </div>
-      ) : <button className="btn primary lg" onClick={ctl.pickFiles}><Icon name="upload" />Add a PDF</button>}
+      ) : (
+        <div className="empty-actions">
+          <button className="btn primary lg" onClick={ctl.pickFiles}><Icon name="upload" />Add a PDF</button>
+          <button className="btn lg" onClick={ctl.addLink}><Icon name="link" />Add from a link</button>
+        </div>
+      )}
     </div>
   );
 }

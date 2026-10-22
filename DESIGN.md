@@ -714,3 +714,44 @@ Tutor and voice:
 - The first connect gives up quickly with an internet message.
 - Texts sent while the connection is closing are re-sent after reconnecting.
 - End, or a dropped socket, finalizes the reply.
+
+## 32. TinyFish: web search that reads the pages, and web pages as sources (2026-10-22)
+
+**Web search** (`tutor/web.py`) gets a switch, `WEB_SEARCH=tinyfish|tavily|duckduckgo` (lowercase, like
+`EMBEDDING_MODEL`). Empty keeps the earlier behaviour (Tavily with a key, else DuckDuckGo), so nothing changes until
+it's set; an unknown value or a missing key is an error in the banner, the log, Settings and the tool result, not a
+quiet fallback. With `tinyfish`: TinyFish Search (`GET api.search.tinyfish.ai`, `X-API-Key`, with a `purpose` naming
+the tutoring intent) finds results; TinyFish Fetch (`POST api.fetch.tinyfish.ai`) reads the top 3 in one request,
+Markdown, 12 s per page (TinyFish allows 110 s; a spoken answer can't wait that long). From each page the paragraphs
+sharing the most words with the question go to the model as `content` (~1,400 characters, page order; the opening
+when nothing matches); images and link targets are dropped. Snippet-only search answered from one line per site;
+reading the pages gives the tutor the actual explanation to teach from and cite.
+
+Failures degrade, never silently: Fetch failing leaves the snippets (the result notes it); Search failing moves to the
+next available service in the order TinyFish, Tavily, DuckDuckGo, and the result says which one answered
+(`searched_with`), which the conversation shows ("Searched the web with TinyFish for …"). TinyFish's 401/402/429
+become plain reasons (key not accepted, free allowance used and wallet empty, too many requests). Plain `httpx`
+calls against the documented REST endpoints: no SDK, so no new dependency for the server install. The Search API's
+`fetch` query parameter exists in its OpenAPI spec but isn't documented, so it isn't used.
+
+Not used, on purpose: Agent (15-60 s per run, paid; nothing here needs clicking through sites), Research (5-20 min per
+report, 5 a day: far too slow for conversation), Browser and Monitor (no fit). Limits per the docs on 2026-10-22: Search
+12,000 and Fetch 1,000 pages free per day (reset 00:00 UTC), then wallet credits; 30 searches and 150 pages a minute.
+
+**Add from a link** (`tutor/web_source.py`, `POST /api/notebooks/{id}/sources/link`). A link straight to a PDF is
+downloaded (any `WEB_SEARCH`; the upload size limit applies). A web page needs `tinyfish`: Fetch returns clean HTML
+(rendered in a real browser), which PyMuPDF's Story lays out as an A4 PDF; heading positions recorded during layout
+become its bookmarks, so the existing parser takes the outline from them (`structure_source` "outline"). Everything
+after that is the normal PDF path (child-process parse, chunks, embeddings, page images, citations), so a web page is
+taught, searched and cited by page like any PDF, and its first line names the address it came from. The layout engine
+writes ligatures ("ﬁ"); the parser and the citation locator both normalise them, so search isn't affected. Scripts,
+styles, navigation, images and iframes are dropped, and attributes are stripped inside tags only (never the page's
+text); forms are kept, since some sites wrap the whole page in one. The server fetches only public addresses: every
+hop of a redirect is resolved and refused if any address isn't global (localhost, private ranges, cloud metadata),
+since on the hosted server a link must not reach the machine's own services. Jobs show a "Getting the page…" stage;
+TinyFish's per-page errors (blocked, login wall, not found, timeout) become readable job errors.
+
+Tests: `tests/test_web.py` (the switch, Search + Fetch requests and results, every fallback, excerpts) and
+`tests/test_web_source.py` (address checks, downloads and redirects, HTML to PDF with its outline through the real
+parser, TinyFish errors), with TinyFish faked from its documented response shapes; `tests/test_server.py` adds a web
+page through the endpoint end to end (indexed, outline from its headings, found by search).

@@ -34,7 +34,7 @@ export interface WebLink {
 export type ToolUI =
   | { kind: "search"; query: string; refs: SearchRef[] }
   | { kind: "passage"; doc_id: string; page: number; pages: string; section: string; position: string; snippet: string }
-  | { kind: "web"; query: string; links: WebLink[] }
+  | { kind: "web"; query: string; links: WebLink[]; via?: string } // via: the service that answered (TinyFish, ...)
   | { kind: "error"; message: string };
 
 export interface HistoryEntry {
@@ -49,7 +49,7 @@ export interface Job {
   notebook_id: string;
   file_name: string;
   status: "uploading" | "queued" | "running" | "done" | "error"; // uploading: still on its way (browser only)
-  stage: "uploading" | "queued" | "parsing" | "chunking" | "embedding" | "saving" | "done";
+  stage: "uploading" | "queued" | "fetching" | "parsing" | "chunking" | "embedding" | "saving" | "done"; // fetching: a link
   done: number;
   total: number;
   percent: number;
@@ -100,7 +100,9 @@ export interface Status {
   auth: "on" | "off"; // VOICE_TUTOR_AUTH: sign-in required (hosted)
   gemini_key: boolean;
   live_model: string;
-  web_provider: "tavily" | "duckduckgo" | string;
+  web_provider: "tinyfish" | "tavily" | "duckduckgo" | string; // WEB_SEARCH in .env
+  web_search?: string; // a description, e.g. "TinyFish (Search, and Fetch reads the top pages)"
+  web_error?: string | null; // WEB_SEARCH can't be used as set (unknown value, missing key)
   voices: string[];
   log_file: string;
   voice: string;

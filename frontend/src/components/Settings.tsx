@@ -259,8 +259,8 @@ function StatusList({ s }: { s: Status | null }) {
       <StatusRow ic="wave" label="Voice model" value={s?.live_model || "—"} state={s ? "ok" : "bad"} />
       <StatusRow ic="key" label="Gemini key" value={s?.gemini_key ? "Configured" : "Missing"} state={s?.gemini_key ? "ok" : "warn"} />
       <StatusRow ic="globe" label="Web search"
-        value={s?.web_provider === "tavily" ? "Tavily" : "DuckDuckGo · add TAVILY_API_KEY for better results"}
-        state={s?.web_provider === "tavily" ? "ok" : "neutral"} />
+        value={s?.web_error || s?.web_search || (s?.web_provider === "tavily" ? "Tavily" : "DuckDuckGo")}
+        state={s?.web_error ? "bad" : s?.web_provider === "tinyfish" || s?.web_provider === "tavily" ? "ok" : "neutral"} />
       <StatusRow ic="cpu" label="Embeddings" value={embeddingText(s)}
         state={s?.embedder === "ready" ? "ok" : s?.embedder === "error" ? "bad" : "warn"} />
       {s?.log_file ? <StatusRow ic="logs" label="Logs" value={s.log_file} state="neutral" /> : null}

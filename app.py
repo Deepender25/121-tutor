@@ -68,7 +68,7 @@ def banner() -> None:
         ("Embeddings", config.EMBEDDING_MODE_ERROR or (
             f"online · {config.EMBEDDING_MODEL} (Gemini API)" if config.EMBEDDING_MODE == "online"
             else f"offline · {config.EMBEDDING_MODEL} (this computer)")),
-        ("Web search", "Tavily" if web.provider() == "tavily" else "DuckDuckGo"),
+        ("Web search", web.describe()),
     ]
     width = max(len(k) for k, _ in rows)
     print("\n  Voice Tutor API server")
