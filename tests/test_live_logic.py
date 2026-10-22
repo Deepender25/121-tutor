@@ -461,7 +461,8 @@ def test_teaching_guard_holds_back_reading_on_until_the_part_is_taught():
     g.model_output("Continuing on, let's explore how these systems operate and differ from previous generations.")
     held = g.hold("read_passage", {"target": "next"})
     assert held and "haven't taught" in held["not_read_yet"] and "page 3" in held["not_read_yet"]
-    assert g.hold("read_passage", {"target": "s007"}) is None  # a jump elsewhere isn't reading on
+    assert g.hold("read_passage", {"target": "s007"})  # nor jumping to another section before teaching this one
+    assert g.hold("read_passage", {"target": "previous"}) is None
     assert g.hold("search_sources", {"query": "x"}) is None
     g.model_output("Cognition means the mental processes of knowing: perceiving, learning, reasoning and deciding. " * 3)
     assert g.hold("read_passage", {"target": "next"}) is None
@@ -545,3 +546,14 @@ def test_front_matter_isnt_held_back():
             "is_section_end": False, "parts_left_in_section": 1})
     g.model_output("The contents list the course's two parts.")
     assert g.hold("read_passage", {"target": "next"}) is None and g.hold("read_passage", {"target": "s005"}) is None
+
+
+def test_one_part_sections_are_taught_one_at_a_time_too():
+    from tutor.server.live import TeachingGuard
+    g = TeachingGuard()
+    g.read({"section": "4.1 Principle 1 - LEARN", "pages": "8", "text": "x" * 900, "is_section_end": True,
+            "parts_left_in_section": 0})
+    g.model_output("Let's look at the next principle.")
+    assert g.hold("read_passage", {"target": "s016"})
+    g.model_output("The first principle is learning: the system learns from data and feedback, not fixed rules. " * 3)
+    assert g.hold("read_passage", {"target": "s016"}) is None

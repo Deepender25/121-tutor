@@ -211,15 +211,16 @@ class TeachingGuard:
             return None
         target = str((args or {}).get("target") or "next").strip().lower()
         p = self.pending
-        if target in ("next", "continue"):
-            if self.spoken >= p["needed"]:
-                return None
+        if target in ("current", "again", "repeat", "previous", "prev", "back"):
+            return None
+        # Reading anything else before teaching the part just read: it once read three one-part sections (the three
+        # principles) back to back, saying only "Let's look at the next principle" between them.
+        if self.spoken < p["needed"]:
             self.holds += 1
             return {"not_read_yet": (
                 f"You haven't taught the part you just read yet ({p['section']}, page {p['pages']}). Explain every "
-                f"point in it out loud now, in your own words; then call read_passage with target next for the "
-                f"following part.")}
-        if target in ("current", "again", "repeat", "previous", "prev", "back") or p["short"] or not p["parts_left"]:
+                f"point in it out loud now, in your own words; then read the next part.")}
+        if target in ("next", "continue") or p["short"] or not p["parts_left"]:
             return None
         # Jumping away mid-section on its own skips parts nobody asked to skip (it once went from a section's first
         # part straight to the next section, leaving out the analogy and the memory trick).

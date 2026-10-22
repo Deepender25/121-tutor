@@ -882,3 +882,9 @@ eight times and "teach me the section on what is cognitive computing" three time
 tutor taught the definitions, the calculator / medical intern analogy and the memory trick with their pages, then
 asked them to explain the difference in their own words; "Continue" went on to the three eras. Runs where the model
 still stopped mid-section or after announcing a step were picked up by the nudge and finished the section.
+
+Later the same day: asked to "explain the three principles", the tutor read the three principle sections (each a
+one-part section) back to back with only "Let's look at the next principle" between them, then explained all three.
+The guard now holds back reading anything (a jump to another section included, not only "next") while the part just
+read hasn't been taught; re-reading and going back are still allowed. Checked live: the read of the third principle
+was held, the tutor explained the first two, then read and taught the third and asked a question.
