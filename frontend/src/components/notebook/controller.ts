@@ -6,7 +6,7 @@
 //   full-screen reading mode where the PDF fills the screen and the tutor becomes a floating orb.
 import { plain } from "@/lib/format";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { api } from "@/lib/api";
+import { api, type HttpError } from "@/lib/api";
 import { h, iconEl } from "@/lib/dom";
 import { FluidOrb, type OrbState } from "@/lib/fluid-orb";
 import { LiveClient, type LiveMessage } from "@/lib/live";
@@ -63,7 +63,10 @@ const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60))
 
 export function jobStageText(j: Job): string {
   if (j.stage === "uploading") return j.percent < 100 ? `Uploading… ${j.percent}%` : "Upload sent · starting…";
-  if (j.stage === "queued") return "Waiting for the previous PDF…";
+  if (j.stage === "queued") {
+    // A job also sits at "queued" while it waits for the search model to finish loading (cold start).
+    return statusStore.get().status?.embedder === "loading" ? "Waiting for the search model to load…" : "Waiting for the previous PDF…";
+  }
   if (j.kind === "reindex") {
     // switched embedding model: the stored text gets new vectors; keyword search works meanwhile
     return j.stage === "embedding" ? `Updating search · ${j.done} of ${j.total}` : j.stage === "saving" ? "Saving…" : "Updating search…";
@@ -276,7 +279,9 @@ export function createNotebookController(initial: Notebook) {
   // ================================================================ live voice
 
   async function ensureReady() {
-    const s = statusStore.get().status || (await refreshStatus());
+    // A cached "no key" (or no answer) is checked again: the key may have been added and the API restarted since.
+    let s = statusStore.get().status;
+    if (!s || !s.gemini_key) s = await refreshStatus();
     if (!s) { toast("Can't reach the server. Start it with run.bat.", "error"); return false; }
     if (!s.gemini_key) { openSettings(); return false; }
     return true;
@@ -299,7 +304,8 @@ export function createNotebookController(initial: Notebook) {
   function paintVoice() {
     if (!live) return;
     const st = live.state;
-    let label = "Tap to talk", sub = "or type a message", key: OrbState = "idle", ic = "mic", aria = "Start talking";
+    let label = matches("(pointer: coarse)") ? "Tap to talk" : "Click to talk";
+    let sub = "or type a message", key: OrbState = "idle", ic = "mic", aria = "Start talking";
     if (st === "connecting") { label = "Connecting…"; sub = "one moment"; key = "connecting"; }
     else if (st === "reconnecting") { label = "Reconnecting…"; sub = "keeping your place"; key = "connecting"; }
     else if (st === "ready") {
@@ -499,18 +505,22 @@ export function createNotebookController(initial: Notebook) {
     }
   }
 
-  async function sendText(text: string) {
+  // `display` is what the bubble and the history show when the model needs more than that (a section id).
+  async function sendText(text: string, display?: string) {
     if (!text.trim() || !live) return;
     if (!(await ensureReady())) return;
-    finalizeTurn();
-    addUser(text, false, new Date().toISOString());
+    // Typed during a reply: the reply's remaining transcript (it keeps arriving until "interrupted") belongs
+    // to the reply already on screen, so that stays open; "interrupted" / "turn_complete" close it.
+    if (S.model) finalizeUser();
+    else finalizeTurn();
+    addUser(display ?? text, false, new Date().toISOString());
     scrollToEnd(true);
-    await live.sendText(text);
+    await live.sendText(text, display);
   }
 
   async function clearChat() {
     if (!nb.history.length && !get().messages.length) return;
-    const ok = await confirmDialog({ title: "Clear the conversation?", body: "This removes the chat history for this notebook. Your sources and reading progress stay.", confirm: "Clear" });
+    const ok = await confirmDialog({ title: "Clear the conversation?", body: "This removes the chat history for this notebook. Your sources and reading position stay.", confirm: "Clear" });
     if (!ok) return;
     try {
       await api.clearHistory(id);
@@ -547,9 +557,13 @@ export function createNotebookController(initial: Notebook) {
   }
 
   async function removeSource(docId: string, title: string) {
-    const ok = await confirmDialog({ title: `Remove “${title}”?`, body: "It will be removed from this notebook. If no other notebook uses it, its index and reading progress are deleted too.", confirm: "Remove" });
+    const ok = await confirmDialog({ title: `Remove “${plain(title)}”?`, body: "It will be removed from this notebook. If no other notebook uses it, its index and reading position are deleted too.", confirm: "Remove" });
     if (!ok) return;
-    try { await api.removeSource(id, docId); await reload(); toast("Source removed", "success"); } catch (err) { toast((err as Error).message, "error"); }
+    try { await api.removeSource(id, docId); await reload(); toast("Source removed", "success"); } catch (err) {
+      // 404: already gone (removed in another tab): show the notebook as it is now.
+      if ((err as HttpError).status === 404) { await reload().catch(() => {}); return; }
+      toast((err as Error).message, "error");
+    }
   }
 
   async function dismissJob(jobId: string) {
@@ -591,7 +605,8 @@ export function createNotebookController(initial: Notebook) {
     showPage(nb.active_source, parseInt(sec.pages, 10) || 1);
     const n = nb.sources.findIndex((s) => s.doc_id === nb.active_source) + 1;
     const where = nb.sources.length > 1 ? ` of source ${n}` : "";
-    sendText(`Teach me the section “${sec.title}” (section id ${sec.id})${where}.`);
+    const title = plain(sec.title);
+    sendText(`Teach me the section “${title}” (section id ${sec.id})${where}.`, `Teach me “${title}”`);
   }
 
   let progressTimer: ReturnType<typeof setTimeout> | undefined;
@@ -678,12 +693,18 @@ export function createNotebookController(initial: Notebook) {
               else await reload();
               store.set((s) => ({ jobs: s.jobs.filter((x) => x.id !== j.id) }));
               api.dismissJob(j.id).catch(() => {});
-              toast(fresh.kind === "reindex" ? `Search is fully ready for “${fresh.title || fresh.file_name}”`
-                : `Added “${fresh.title || fresh.file_name}”`, "success");
+              const name = plain(fresh.title || fresh.file_name);
+              toast(fresh.kind === "reindex" ? `Search is fully ready for “${name}”` : `Added “${name}”`, "success");
             } else {
               store.set((s) => ({ jobs: s.jobs.map((x) => (x.id === j.id ? fresh : x)) }));
             }
-          } catch { store.set((s) => ({ jobs: s.jobs.filter((x) => x.id !== j.id) })); }
+          } catch (e) {
+            // Only a job the server no longer knows is dropped; a slow or failing answer is asked again next round.
+            if ((e as HttpError).status === 404) {
+              store.set((s) => ({ jobs: s.jobs.filter((x) => x.id !== j.id) }));
+              toast(`Lost track of “${plain(j.file_name)}”. Reload the page to check.`, "info");
+            }
+          }
         }
       }
     } finally { polling = false; }
@@ -713,7 +734,7 @@ export function createNotebookController(initial: Notebook) {
     if (!src || src.missing) return;
     const token = ++showToken;
     if (docId !== S.viewerDocId || !pdf.total) {
-      openDoc(docId, src.title);
+      openDoc(docId, plain(src.title));
       if (!(await pdf.open(docId, src.pages || 1)) || token !== showToken) return;
     }
     page = Math.min(Math.max(1, page || 1), pdf.total);
@@ -905,7 +926,7 @@ export function createNotebookController(initial: Notebook) {
       floatOrb = new FluidOrb({ size: 60, state: S.voiceKey });
       els.floatOrbBtn?.prepend(floatOrb.el);
       paintVoice();
-      if (!live?.active && !nb.history.length) {
+      if (!live?.active && !get().messages.length) {
         bubbleSay("hint", "Tap me to talk about what you're reading.");
         hideBubbleSoon(6000);
       }
@@ -969,6 +990,13 @@ export function createNotebookController(initial: Notebook) {
         toast(message, "error", 6500);
         if (fatal) finalizeTurn();
       },
+      // However it ended (End, the server, a dropped connection): no half-open reply, no captions still queued.
+      onClosed: () => {
+        cancelPlaybackTimers();
+        heardCaption = "";
+        finalizeTurn();
+        hideBubbleSoon(2500);
+      },
     });
 
     dockOrb = new FluidOrb({ size: 42 });
@@ -997,8 +1025,11 @@ export function createNotebookController(initial: Notebook) {
     };
     const typing = (el: Element | null) => !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || (el as HTMLElement).isContentEditable);
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector(".overlay")) return;
+      // React handlers run first (its root listener is on the document): a key they handled is theirs.
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || document.querySelector(".overlay, .menu")) return;
       if (typing(document.activeElement)) return;
+      // Controls with their own arrow and Enter keys (split handles, segmented choices).
+      if ((e.target as Element | null)?.closest?.("[role=separator], [role=radio], [role=radiogroup]")) return;
       if (e.key === "/") { e.preventDefault(); if (S.reading) toggleComposer(true); else focusComposer(); }
       else if ((e.key === "m" || e.key === "M") && live?.active) { e.preventDefault(); live.toggleMic(); }
       else if ((e.key === "f" || e.key === "F") && (S.viewerDocId || S.reading)) { e.preventDefault(); setReading(!S.reading); }
@@ -1009,8 +1040,13 @@ export function createNotebookController(initial: Notebook) {
     };
     // Leaving full screen with the browser's own Esc / F11 also leaves reading mode.
     const onFullscreen = () => { if (!document.fullscreenElement && S.reading) setReading(false); };
+    // The voice and the tutor's manner are fixed when a conversation starts: say what a change needs.
     const onSettings = (e: Event) => {
-      if (live?.active) toast(`End and restart the conversation to hear ${(e as CustomEvent).detail.voice}.`, "info", 5000);
+      if (!live?.active) return;
+      const { voice, voiceChanged, styleChanged } = (e as CustomEvent<{ voice: string; voiceChanged?: boolean; styleChanged?: boolean }>).detail;
+      if (voiceChanged && styleChanged) toast("End and restart the conversation to use the new voice and tutor settings.", "info", 5000);
+      else if (voiceChanged) toast(`End and restart the conversation to hear ${voice}.`, "info", 5000);
+      else if (styleChanged) toast("The new tutor settings apply from your next conversation.", "info", 5000);
     };
     window.addEventListener("dragenter", onDragEnter);
     window.addEventListener("dragover", onDragOver);
@@ -1028,6 +1064,16 @@ export function createNotebookController(initial: Notebook) {
       document.removeEventListener("fullscreenchange", onFullscreen);
       window.removeEventListener("vt-settings", onSettings);
     });
+
+    // Cold start: the outline needs the search model (the server answers 503 until it's loaded), so it's
+    // loaded again once the model is ready.
+    let embedder = statusStore.get().status?.embedder;
+    cleanups.push(statusStore.subscribe(() => {
+      const now = statusStore.get().status?.embedder;
+      const became = now === "ready" && embedder !== "ready";
+      embedder = now;
+      if (became && nb.active_source && (get().outlineError || !get().outline)) loadOutline();
+    }));
 
     const stageResize = new ResizeObserver(() => { if (get().stage.show) fitStage(); });
     if (els.voiceStage) stageResize.observe(els.voiceStage);

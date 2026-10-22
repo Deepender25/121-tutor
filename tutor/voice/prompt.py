@@ -4,10 +4,15 @@ Position and history are injected here on every (re)connect because the model's 
 compressed and resumption handles expire.
 """
 
+import logging
+from datetime import datetime
+
 from tutor import config
-from tutor.library import DocumentCache
+from tutor.library import DocumentCache, DocumentError
 from tutor.notebooks import Notebook
 from tutor.voice.style import style_block
+
+log = logging.getLogger("prompt")
 
 TEMPLATE_PATH = config.PROJECT_ROOT / "prompts" / "system.md"
 MAX_OUTLINE_LINES = 40
@@ -17,12 +22,19 @@ RECENT_CHARS = 6000
 
 def _sources_block(nb: Notebook, cache: DocumentCache) -> str:
     if not nb.sources:
-        return ("This notebook has no sources yet. Tell the person they can add a PDF with the 'Add source' "
-                "button. Meanwhile you can still chat, brainstorm and research on the web, but say clearly "
-                "that answers aren't from their material.")
+        return ("This notebook has no sources yet. Tell the person they can drop a PDF anywhere on the page or use "
+                "the Add button in the Sources panel. Meanwhile you can still chat, brainstorm and research on the "
+                "web, but say clearly that answers aren't from their material.")
     lines = []
     for n, doc_id in enumerate(nb.sources, 1):
-        lesson = cache.get(doc_id).lesson
+        # A source whose index is missing or stale must not stop the session: list it as unavailable.
+        try:
+            lesson = cache.get(doc_id).lesson
+        except DocumentError as e:
+            log.warning("Source %s can't be opened for the prompt: %s", doc_id, e)
+            lines.append(f"{n}. (a source that can't be opened right now; don't use it. If the person asks about it, "
+                         "tell them to remove it and add the PDF again.)")
+            continue
         active = doc_id == nb.active_source
         outline = lesson.outline(max_level=2 if active else 1)
         tag = " [ACTIVE: the one being taught]" if active else ""
@@ -39,7 +51,11 @@ def _sources_block(nb: Notebook, cache: DocumentCache) -> str:
 def _position_block(nb: Notebook, cache: DocumentCache) -> str:
     if not nb.active_source:
         return ""
-    lesson = cache.get(nb.active_source).lesson
+    try:
+        lesson = cache.get(nb.active_source).lesson
+    except DocumentError as e:
+        log.warning("Active source %s can't be opened for the reading position: %s", nb.active_source, e)
+        return ""
     pos = lesson.position()
     if not pos.get("started"):
         return (f"# Reading position\nThe active source \"{lesson.title}\" hasn't been started yet. If the person "
@@ -66,7 +82,9 @@ def _recent_block(nb: Notebook) -> str:
 def build_system_prompt(nb: Notebook, cache: DocumentCache, style: dict | None = None) -> str:
     """`style`: the tutor's manner from Settings (tutor/voice/style.py); None means the defaults."""
     text = TEMPLATE_PATH.read_text(encoding="utf-8")
+    now = datetime.now()
     for key, value in {
+        "{today}": f"{now:%A}, {now.day} {now:%B %Y}",
         "{style_block}": style_block(style),
         "{notebook_name}": nb.name,
         "{sources_block}": _sources_block(nb, cache),

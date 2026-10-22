@@ -6,7 +6,8 @@ of three PDFs; malloc_trim got back only 62 MB. The API server lives for days, s
 process instead (started like the embedding worker, tutor/retrieval/worker.py) and gets all of it back when the
 child exits. The child runs exactly parse_pdf and sends back its result, so the document comes out the same.
 If reading fails, the child's own exception is raised here (same type and message); if the child dies (out of
-memory, a native crash), the job fails with an explanation instead of the server going down with it.
+memory, a native crash) or hangs past its deadline, the job fails with an explanation instead of the server going
+down with it or the queue waiting forever.
 """
 
 import logging
@@ -50,8 +51,24 @@ def _died(exitcode: int | None) -> str:
     return f"Reading the PDF stopped unexpectedly (exit code {exitcode}). Details are in the server log."
 
 
-def parse_pdf_isolated(path: Path, fallback_every: int = 5) -> ParsedDocument:
+def _deadline_for(path: Path) -> float:
+    """Seconds a PDF may take: 5 per page, at least 5 minutes. The server reads one PDF at a time, so a reader that
+    hangs on a damaged file would otherwise hold up every later upload and re-index."""
+    try:
+        import pymupdf
+
+        with pymupdf.open(str(path)) as d:
+            pages = d.page_count
+    except Exception:  # not readable here: the child reports the real error
+        pages = 0
+    return max(300, 5 * pages)
+
+
+def parse_pdf_isolated(path: Path, fallback_every: int = 5, timeout_s: float | None = None) -> ParsedDocument:
     started = time.perf_counter()
+    if timeout_s is None:
+        timeout_s = _deadline_for(path)
+    deadline = time.monotonic() + timeout_s
     ctx = mp.get_context("spawn")
     receiver, sender = ctx.Pipe(duplex=False)
     proc = ctx.Process(target=_child, args=(sender, str(path), fallback_every), name="pdf-reader", daemon=True)
@@ -63,6 +80,13 @@ def parse_pdf_isolated(path: Path, fallback_every: int = 5) -> ParsedDocument:
         while not receiver.poll(0.5):
             if not proc.is_alive() and not receiver.poll(0):
                 raise EOFError
+            if time.monotonic() > deadline:
+                proc.kill()
+                proc.join(timeout=5)
+                log.error("Reading %s took longer than %ds; stopped it", path.name, timeout_s)
+                raise PdfReaderDied(f"Reading the PDF took longer than {round(timeout_s / 60)} minutes, so it was "
+                                    "stopped. The PDF may be damaged or unusually complex: try saving it again "
+                                    "(Print to PDF) or splitting it.")
         result = receiver.recv()
     except (EOFError, OSError):
         proc.join(timeout=10)

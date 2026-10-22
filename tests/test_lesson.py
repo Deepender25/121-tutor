@@ -42,10 +42,39 @@ def test_navigation_targets():
     assert lesson.resolve("current") == 3
 
 
+def test_a_section_asked_for_is_read_whole_with_its_subsections():
+    lesson = make_lesson()
+    first = lesson.read("s000")  # Chapter 1 spans 1.1 and 1.2: orders 0-2
+    assert first["position"] == "Chapter 1 Basics, part 1 of 3"
+    assert not first["is_section_end"] and first["parts_left_in_section"] == 2
+    assert first["section"] == "s001"  # the chunk's own heading still names the subsection
+    lesson.read("next")
+    last = lesson.read("next")
+    assert last["is_section_end"] and last["parts_left_in_section"] == 0
+    assert last["position"] == "Chapter 1 Basics, part 3 of 3"
+    after = lesson.read("next")  # past the section: back to the chunk's own section
+    assert after["position"] == "Chapter 2 Practice, part 1 of 2" and not after["is_section_end"]
+    again = make_lesson().read("chapter 1")
+    assert again["position"] == "Chapter 1 Basics, part 1 of 3" and again["parts_left_in_section"] == 2
+
+
+def test_the_section_scope_survives_repeat_and_back_but_not_a_page_jump():
+    lesson = make_lesson()
+    lesson.read("chapter 1")
+    lesson.read("next")
+    assert lesson.read("again")["position"] == "Chapter 1 Basics, part 2 of 3"
+    assert lesson.read("back")["position"] == "Chapter 1 Basics, part 1 of 3"
+    assert lesson.read("page 2")["position"] == "1.1 Terms, part 2 of 2"  # own range again
+    assert lesson.read("start")["position"] == "1.1 Terms, part 1 of 2"
+
+
 def test_errors_are_speakable():
     lesson = make_lesson()
     with pytest.raises(LessonError, match="No section matches"):
         lesson.resolve("quantum gravity")
+    with pytest.raises(LessonError, match="search_sources") as e:
+        lesson.read("chapter 9")
+    assert "search_document" not in str(e.value)
     with pytest.raises(LessonError, match="past the end"):
         lesson.resolve("page:99")
     lesson.read("page:9")

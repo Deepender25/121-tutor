@@ -36,8 +36,8 @@ export function ErrorState({ retry }: { retry: () => void }) {
     <div className="empty-hero">
       <div className="modal-icon danger"><Icon name="alert" /></div>
       <h2>Something went wrong</h2>
-      <p>This page hit an unexpected error. Details are in the browser console and logs\ui.log.</p>
-      <div className="hero-actions" style={{ justifyContent: "center" }}>
+      <p>This page hit an unexpected error. Details are in the browser console.</p>
+      <div className="hero-actions">
         <button className="btn primary" onClick={() => retry()}>Try again</button>
         <Link className="btn" href="/">Back to notebooks</Link>
       </div>

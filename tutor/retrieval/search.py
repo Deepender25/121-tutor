@@ -28,6 +28,7 @@ def _row(doc_id: str, r: dict) -> dict:
         "page_start": int(r["page_start"]),
         "page_end": int(r["page_end"]),
         "text": r["text"],
+        "overlap_chars": int(r.get("overlap_chars") or 0),  # leading text copied from the previous chunk
     }
 
 

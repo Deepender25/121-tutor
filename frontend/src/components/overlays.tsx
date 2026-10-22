@@ -2,7 +2,7 @@
 // App-wide overlays: toasts, dialogs and sheets (promise-based), and pop-up menus. They can be opened from
 // anywhere (components, the voice client, timers); the hosts below render them. Same markup and classes as
 // before, including the 180 ms leave animation.
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createStore, useStore } from "@/lib/store";
 import { Icon } from "./Icon";
 
@@ -136,15 +136,24 @@ export function promptDialog({ title, body = "", value = "", placeholder = "", c
 
 function LayerView({ layer, top }: { layer: Layer; top: boolean }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const [labelId, setLabelId] = useState<string | undefined>(undefined);
   const close = (value?: unknown) => closeLayer(layer.id, value);
 
   useEffect(() => {
+    // The dialog is named by its first heading (given an id here, since the content is rendered by callers).
+    const heading = boxRef.current?.querySelector("h2");
+    if (heading) { if (!heading.id) heading.id = titleId; setLabelId(heading.id); }
     const frame = requestAnimationFrame(() => {
       const box = boxRef.current;
-      (box?.querySelector<HTMLElement>("[data-autofocus]") || box?.querySelector<HTMLElement>("input, button.primary, button.accent, button.danger"))?.focus();
+      if (!box) return;
+      const want = box.querySelector<HTMLElement>("[data-autofocus]") || box.querySelector<HTMLElement>("input, button.primary, button.accent, button.danger");
+      want?.focus();
+      // Nothing took focus (Settings' "Save changes" starts disabled): the close button, else the box itself.
+      if (!box.contains(document.activeElement)) (box.querySelector<HTMLElement>("button[aria-label^='Close']") || box).focus();
     });
     return () => cancelAnimationFrame(frame);
-  }, []);
+  }, [titleId]);
 
   useEffect(() => {
     if (!top) return;
@@ -157,8 +166,9 @@ function LayerView({ layer, top }: { layer: Layer; top: boolean }) {
 
   return (
     <div className={`overlay ${layer.kind}-overlay${layer.leaving ? " leaving" : ""}`} role="dialog" aria-modal="true"
+      aria-labelledby={labelId}
       onMouseDown={(e) => { if (e.target === e.currentTarget) close(undefined); }}>
-      <div className={layer.kind} ref={boxRef}>{layer.render(close)}</div>
+      <div className={layer.kind} ref={boxRef} tabIndex={-1}>{layer.render(close)}</div>
     </div>
   );
 }
@@ -173,12 +183,19 @@ function LayerHost() {
 // ---------------------------------------------------------------- menus
 
 export interface MenuItem { label: string; icon?: string; danger?: boolean; action: () => void }
-interface MenuState { anchor: DOMRect; items: MenuItem[]; key: number }
+interface MenuState { anchor: Element; rect: DOMRect; items: MenuItem[]; key: number }
 const menuStore = createStore({ menu: null as MenuState | null });
 let menuSeq = 0;
 
 export function openMenu(anchor: Element, items: MenuItem[]) {
-  menuStore.set({ menu: { anchor: anchor.getBoundingClientRect(), items, key: ++menuSeq } });
+  menuStore.set({ menu: { anchor, rect: anchor.getBoundingClientRect(), items, key: ++menuSeq } });
+}
+
+// Closing from the keyboard gives focus back to what opened the menu.
+function closeMenu(refocus: boolean) {
+  const anchor = menuStore.get().menu?.anchor as HTMLElement | undefined;
+  menuStore.set({ menu: null });
+  if (refocus && anchor?.isConnected) anchor.focus?.();
 }
 
 function MenuHost() {
@@ -189,7 +206,7 @@ function MenuHost() {
   useLayoutEffect(() => {
     const el = ref.current;
     if (!menu || !el) { setPos(null); return; }
-    const r = menu.anchor;
+    const r = menu.rect;
     const w = el.offsetWidth;
     setPos({
       top: Math.min(r.bottom + 6, window.innerHeight - el.offsetHeight - 8),
@@ -204,13 +221,35 @@ function MenuHost() {
     return () => { clearTimeout(timer); document.removeEventListener("mousedown", away); };
   }, [menu]);
 
+  // Keyboard: focus starts on the first item, arrows move between items, Esc closes the menu (and only the
+  // menu: captured here so the page's own Esc, which ends the conversation, never sees it).
+  useEffect(() => {
+    if (!menu) return;
+    const items = () => [...(ref.current?.querySelectorAll<HTMLElement>("[role=menuitem]") || [])];
+    const frame = requestAnimationFrame(() => items()[0]?.focus({ preventScroll: true }));
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeMenu(true); return; }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+      const list = items();
+      if (!list.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const at = list.indexOf(document.activeElement as HTMLElement);
+      const next = e.key === "Home" ? 0 : e.key === "End" ? list.length - 1
+        : e.key === "ArrowDown" ? (at + 1) % list.length : (at <= 0 ? list.length - 1 : at - 1);
+      list[next].focus();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => { cancelAnimationFrame(frame); document.removeEventListener("keydown", onKey, true); };
+  }, [menu]);
+
   if (!menu) return null;
   return (
     <div className="menu" role="menu" ref={ref} key={menu.key}
       style={pos ? { top: pos.top, left: pos.left } : { top: -9999, left: -9999 }}>
       {menu.items.map((item) => (
         <button key={item.label} className={item.danger ? "danger" : ""} role="menuitem"
-          onClick={(e) => { e.stopPropagation(); menuStore.set({ menu: null }); item.action(); }}>
+          onClick={(e) => { e.stopPropagation(); closeMenu(e.detail === 0); item.action(); }}>
           {item.icon ? <Icon name={item.icon} className="sm" /> : null}
           {item.label}
         </button>

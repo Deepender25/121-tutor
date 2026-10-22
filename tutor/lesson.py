@@ -68,10 +68,17 @@ class Lesson:
         for c in chunks:
             first, _ = self._own.get(c.section_id, (c.order, c.order))
             self._own[c.section_id] = (first, c.order)
+        # The section asked for by name or id (with its subsections), while reading stays inside it; None otherwise.
+        self._scope: Section | None = None
 
     # ---- resolving targets -------------------------------------------------------------
 
     def resolve(self, target: str) -> int:
+        return self._resolve_scoped(target)[0]
+
+    def _resolve_scoped(self, target: str) -> tuple[int, Section | None]:
+        """The chunk order for `target`, and the section whose whole range (subsections included) the reading is
+        in: the section jumped to, kept while next/current/previous stay inside it; None means the chunk's own."""
         t = (target or "next").strip().lower()
         last = len(self.chunks) - 1
         if last < 0:
@@ -80,18 +87,23 @@ class Lesson:
         if t in ("next", "continue"):
             if cursor >= last:
                 raise LessonError("We've reached the end of the document.")
-            return cursor + 1
+            return self._keep_scope(cursor + 1)
         if t in ("current", "again", "repeat"):
-            return max(cursor, 0)
+            return self._keep_scope(max(cursor, 0))
         if t in ("previous", "prev", "back"):
-            return max(cursor - 1, 0)
+            return self._keep_scope(max(cursor - 1, 0))
         if t in ("start", "beginning", "first"):
-            return 0
+            return 0, None
         if m := _PAGE.match(t):
-            return self._order_for_page(int(m.group(1)))
-        if _SECTION_ID.match(t):
-            return self._order_for_section(self._by_id.get(t), target)
-        return self._order_for_section(self._find_by_title(t), target)
+            return self._order_for_page(int(m.group(1))), None
+        section = self._by_id.get(t) if _SECTION_ID.match(t) else self._find_by_title(t)
+        return self._order_for_section(section, target), section
+
+    def _keep_scope(self, order: int) -> tuple[int, Section | None]:
+        scope = self._scope
+        if scope is not None and scope.first_order <= order <= scope.last_order:
+            return order, scope
+        return order, None
 
     def _order_for_page(self, page: int) -> int:
         for c in self.chunks:
@@ -102,7 +114,8 @@ class Lesson:
     def _order_for_section(self, section: Section | None, target: str) -> int:
         if section is None:
             raise LessonError(
-                f"No section matches '{target}'. Use get_outline to see sections, or search_document."
+                f"No section matches '{target}'. Use get_outline to see the sections, or search_sources to find "
+                "where it's discussed."
             )
         if section.first_order < 0:
             raise LessonError(f"Section '{section.title}' has no text to read.")
@@ -123,10 +136,15 @@ class Lesson:
     # ---- tool-facing operations --------------------------------------------------------
 
     def read(self, target: str = "next") -> dict:
-        order = self.resolve(target)
+        order, scope = self._resolve_scoped(target)
         chunk = self.chunks[order]
         section = self._by_id[chunk.section_id]
-        own_first, own_last = self._own[chunk.section_id]
+        if scope is None:  # parts of the chunk's own section
+            first, last = self._own[chunk.section_id]
+            title = section.title
+        else:  # parts of the section asked for, including its subsections
+            first, last, title = scope.first_order, scope.last_order, scope.title
+        self._scope = scope
 
         self.progress.cursor = order
         self.progress.last_summary = (
@@ -139,8 +157,9 @@ class Lesson:
             "section_id": section.section_id,
             "section": chunk.heading_path or section.title,
             "pages": _pages(chunk.page_start, chunk.page_end),
-            "position": f"{section.title}, part {order - own_first + 1} of {own_last - own_first + 1}",
-            "is_section_end": order == own_last,
+            "position": f"{title}, part {order - first + 1} of {last - first + 1}",
+            "is_section_end": order == last,
+            "parts_left_in_section": last - order,
             "is_document_end": order == len(self.chunks) - 1,
         }
 

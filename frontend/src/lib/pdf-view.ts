@@ -14,7 +14,7 @@ const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 3;
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-interface Page { n: number; w: number; h: number; r: number; el: HTMLElement; img: HTMLImageElement; scale: number }
+interface Page { n: number; w: number; h: number; r: number; el: HTMLElement; img: HTMLImageElement; scale: number; failed: boolean }
 interface Anchor { p: Page; y: number; frac: number; x: number }
 
 export interface PdfViewOptions {
@@ -107,8 +107,17 @@ export class PdfView {
       const img = h("img", { alt: `Page ${i + 1}`, draggable: "false", decoding: "async" }) as HTMLImageElement;
       const el = h("div", { class: "pdf-page", dataset: { n: String(i + 1) },
         style: { "--r": (w / ref).toFixed(4), "--ar": `${w} / ${hgt}` } }, img);
-      img.addEventListener("load", () => { if (img.getAttribute("src")) el.classList.add("ready"); });
-      return { n: i + 1, w, h: hgt, r: w / ref, el, img, scale: 0 };
+      const page: Page = { n: i + 1, w, h: hgt, r: w / ref, el, img, scale: 0, failed: false };
+      img.addEventListener("load", () => {
+        if (!img.getAttribute("src")) return;
+        page.failed = false;
+        el.classList.remove("failed");
+        el.querySelector(".page-error")?.remove();
+        el.classList.add("ready");
+      });
+      // A page the server couldn't render (or a dropped connection): say so, instead of breathing forever.
+      img.addEventListener("error", () => { if (img.getAttribute("src")) this.fail(page); });
+      return page;
     });
     this.inner.replaceChildren(...this.pages.map((p) => p.el));
     this.el.replaceChildren(this.inner);
@@ -291,6 +300,7 @@ export class PdfView {
   }
 
   private load(p: Page) {
+    if (p.failed) { this.retry(p); return; } // coming back into view: try again
     const scale = this.scaleFor(p);
     if (p.scale === scale || !this.docId) return;
     p.scale = scale;
@@ -300,6 +310,26 @@ export class PdfView {
     const next = new Image();
     next.onload = () => { if (p.scale === scale) p.img.src = url; };
     next.src = url;
+  }
+
+  private fail(p: Page) {
+    p.failed = true;
+    p.el.classList.remove("ready");
+    p.el.classList.add("failed");
+    if (p.el.querySelector(".page-error")) return;
+    const retry = h("button", { class: "page-error", type: "button" }, `Couldn't load page ${p.n} · Retry`);
+    retry.addEventListener("click", () => this.retry(p));
+    p.el.append(retry);
+  }
+
+  // Ask again, past any cached failure.
+  private retry(p: Page) {
+    if (!this.docId) return;
+    p.failed = false;
+    p.el.classList.remove("failed");
+    p.el.querySelector(".page-error")?.remove();
+    p.scale = this.scaleFor(p);
+    p.img.src = `${api.pageUrl(this.docId, p.n, p.scale)}&retry=${Date.now()}`;
   }
 
   private unload(p: Page) {

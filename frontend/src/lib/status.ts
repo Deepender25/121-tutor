@@ -25,3 +25,20 @@ export function startStatusPolling() {
     if (s && s.embedder !== "loading" && polling) { clearInterval(polling); polling = null; }
   }, 2500);
 }
+
+let watching = false;
+let lastWake = 0;
+
+// Polling stops once the model is ready, so a fixed key or a closed API window would otherwise only show up
+// after a reload: check again whenever the tab comes back into view (at most every 5 s).
+export function startStatusWatch() {
+  if (watching) return;
+  watching = true;
+  const wake = () => {
+    if (document.visibilityState !== "visible" || Date.now() - lastWake < 5000) return;
+    lastWake = Date.now();
+    refreshStatus();
+  };
+  window.addEventListener("focus", wake);
+  document.addEventListener("visibilitychange", wake);
+}

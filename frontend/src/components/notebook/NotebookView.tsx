@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { clockTime, dayLabel, plain } from "@/lib/format";
+import { clockTime, dayLabel, plain, plural } from "@/lib/format";
 import { statusStore } from "@/lib/status";
 import { useStore } from "@/lib/store";
 import type { Notebook, Source, ToolUI } from "@/lib/types";
@@ -13,7 +13,7 @@ import { Icon, Mark } from "../Icon";
 import { CoverChip } from "../ui/book";
 import { pickCover } from "../ui/cover-picker";
 import { copyText, useHydrated } from "../overlays";
-import { openSettings, StatusPill } from "../Settings";
+import { KeyHelp, openSettings, StatusPill } from "../Settings";
 import { type Act, createNotebookController, jobStageText, type Msg, type NotebookController, QUICK, type Tab } from "./controller";
 
 type Ctl = NotebookController;
@@ -53,7 +53,7 @@ function Topbar({ ctl }: { ctl: Ctl }) {
   useEffect(() => { saved.current = nb.name; setName(nb.name); }, [nb.name]);
 
   const pages = nb.sources.reduce((n, s) => n + (s.pages || 0), 0);
-  const sub = nb.sources.length ? `${nb.sources.length} source${nb.sources.length > 1 ? "s" : ""} · ${pages} pages` : "No sources yet";
+  const sub = nb.sources.length ? `${plural(nb.sources.length, "source")} · ${plural(pages, "page")}` : "No sources yet";
 
   const commit = async () => {
     const next = name.trim();
@@ -84,7 +84,7 @@ function Topbar({ ctl }: { ctl: Ctl }) {
       <div className="topbar-actions">
         {voice.active ? <span className={`live-pill state-${voice.key}`}><span className="dot" />Live</span> : null}
         <StatusPill />
-        <button className={cls("icon-btn", toggleActive && "active")} aria-label="Show or hide the page viewer" data-tip="Page viewer" onClick={ctl.toggleViewer}><Icon name="panel" /></button>
+        <button className={cls("icon-btn", toggleActive && "active")} aria-label="Show or hide the page viewer" aria-pressed={toggleActive} data-tip="Page viewer" onClick={ctl.toggleViewer}><Icon name="panel" /></button>
         <button className="icon-btn" aria-label="Settings" data-tip="Settings" onClick={() => openSettings()}><Icon name="settings" /></button>
       </div>
     </header>
@@ -164,15 +164,16 @@ const SourcesPanel = memo(function SourcesPanel({ ctl }: { ctl: Ctl }) {
 function SourceItem({ ctl, s, index, active, many }: { ctl: Ctl; s: Source; index: number; active: boolean; many: boolean }) {
   return (
     <div className={`source${active ? " active" : ""}`} role="button" tabIndex={0}
-      title={active ? "This source is being taught" : "Teach this source"}
-      onClick={() => ctl.setActive(s.doc_id)} onKeyDown={(e) => { if (e.key === "Enter") ctl.setActive(s.doc_id); }}>
+      title={active ? "This source is being taught" : "Switch to this source"}
+      onClick={() => ctl.setActive(s.doc_id)}
+      onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); ctl.setActive(s.doc_id); } }}>
       <CoverChip cover={s.missing ? null : coverFor(s.doc_id)} className="file-tile">{many ? <i>{String(index + 1)}</i> : null}</CoverChip>
       <div className="source-text">
         <div className="title">{plain(s.title)}</div>
         <div className="sub" title={s.keyword_only ? "Indexed with the other embedding model. Search matches keywords until it's updated." : undefined}>
-          {s.missing ? "Missing — add it again" : `${s.pages} pages${s.keyword_only ? " · updating search" : ""}`}{active ? <span className="badge">Teaching</span> : null}</div>
+          {s.missing ? "Missing — add it again" : `${plural(s.pages || 0, "page")}${s.keyword_only ? " · updating search" : ""}`}{active ? <span className="badge">Teaching</span> : null}</div>
       </div>
-      <button className="icon-btn xs remove" aria-label={`Remove ${s.title}`} data-tip="Remove"
+      <button className="icon-btn xs remove" aria-label={`Remove ${plain(s.title)}`} data-tip="Remove"
         onClick={(e) => { e.stopPropagation(); ctl.removeSource(s.doc_id, s.title); }}>
         <Icon name="trash" className="sm" />
       </button>
@@ -184,10 +185,11 @@ function OutlineBox({ ctl }: { ctl: Ctl }) {
   const o = useStore(ctl.store, (s) => s.outline);
   const error = useStore(ctl.store, (s) => s.outlineError);
   const hasActive = useStore(ctl.store, (s) => !!s.nb.active_source);
+  if (!hasActive) return null;
   let content = null;
-  if (!hasActive) content = null;
-  else if (error) content = <div className="viewer-empty">{error}</div>;
-  else if (o) {
+  if (error) content = <div className="viewer-empty">{error}</div>;
+  else if (!o) content = <div className="viewer-empty">Loading the outline…</div>;
+  else {
     const current = o.position?.started ? o.position.section_id : null;
     content = (
       <>
@@ -226,7 +228,7 @@ const ChatPanel = memo(function ChatPanel({ ctl }: { ctl: Ctl }) {
       <div className="banner-slot">
         {keyMissing ? (
           <div className="banner"><Icon name="key" />
-            <div><b>Voice needs a Gemini API key. </b>Get one free at aistudio.google.com/apikey, add <code>GEMINI_API_KEY=…</code> to the <code>.env</code> file in the project folder, then restart run.bat.</div>
+            <div><b>Voice needs a Gemini API key. </b><KeyHelp /></div>
           </div>
         ) : null}
       </div>
@@ -311,7 +313,7 @@ function ActRow({ act, sources, ctl }: { act: Act; sources: Source[]; ctl: Ctl }
 }
 
 function RefChips({ ui, sources, ctl }: { ui: ToolUI; sources: Source[]; ctl: Ctl }) {
-  const title = (docId: string) => sources.find((s) => s.doc_id === docId)?.title || "Source";
+  const title = (docId: string) => plain(sources.find((s) => s.doc_id === docId)?.title) || "Source";
   const chip = (key: string, docId: string, page: number, label: string, snippet: string, tip: string) => {
     const n = sources.findIndex((s) => s.doc_id === docId) + 1;
     return (
@@ -335,8 +337,8 @@ function RefChips({ ui, sources, ctl }: { ui: ToolUI; sources: Source[]; ctl: Ct
     return (
       <>
         {ui.links.slice(0, 5).map((l) => (
-          <a key={l.url} className="ref web" href={l.url} target="_blank" rel="noopener noreferrer" title={l.title}>
-            <Icon name="globe" className="sm" /><span>{l.site || l.title}</span>
+          <a key={l.url} className="ref web" href={l.url} target="_blank" rel="noopener noreferrer" title={plain(l.title)}>
+            <Icon name="globe" className="sm" /><span>{plain(l.site || l.title)}</span>
           </a>
         ))}
       </>
@@ -347,8 +349,9 @@ function RefChips({ ui, sources, ctl }: { ui: ToolUI; sources: Source[]; ctl: Ct
 
 function EmptyState({ ctl }: { ctl: Ctl }) {
   const sources = useStore(ctl.store, (s) => s.nb.sources);
+  const activeId = useStore(ctl.store, (s) => s.nb.active_source);
   const hasSources = sources.length > 0;
-  const started = sources.some((s) => s.position?.started);
+  const started = !!sources.find((s) => s.doc_id === activeId)?.position?.started; // like the Dock's quick actions
   const ideas: [string, string][] = hasSources
     ? [["play", started ? "Continue where we left off" : "Teach me from the beginning"],
        ["info", "What is this about?"], ["sparkles", "Quiz me on the first chapter"], ["globe", "What's the latest on this topic?"]]
@@ -475,7 +478,7 @@ function Dock({ ctl }: { ctl: Ctl }) {
             <span className="orb-icon"><Icon name="mic" className="lg" /></span>
           </button>
           {live ? (
-            <button className="end-btn" aria-label="End conversation (Esc)" data-tip="Esc" onClick={ctl.endLive}>
+            <button className="end-btn" aria-label="End conversation (Esc)" data-tip="End (Esc)" onClick={ctl.endLive}>
               <Icon name="hangup" className="sm" />End
             </button>
           ) : null}
@@ -506,7 +509,11 @@ const ViewerPanel = memo(function ViewerPanel({ ctl }: { ctl: Ctl }) {
           <button className="zoom-label" aria-label="Fit to width" data-tip="Fit width" onClick={ctl.fitWidth}>{`${Math.round(v.zoom * 100)}%`}</button>
           <button className="icon-btn sm" aria-label="Zoom in" onClick={ctl.zoomIn}><Icon name="zoomIn" className="sm" /></button>
         </div>
-        <a className="icon-btn sm" aria-label="Open the PDF in a new tab" data-tip="Open PDF" target="_blank" rel="noopener" href={openHref}><Icon name="external" className="sm" /></a>
+        {openHref ? (
+          <a className="icon-btn sm" aria-label="Open the PDF in a new tab" data-tip="Open PDF" target="_blank" rel="noopener" href={openHref}><Icon name="external" className="sm" /></a>
+        ) : (
+          <button className="icon-btn sm" aria-label="Open the PDF in a new tab" disabled><Icon name="external" className="sm" /></button>
+        )}
         <button className="icon-btn sm" aria-label={reading ? "Exit full screen (F)" : "Full-screen reading (F)"} data-tip={reading ? "Exit full screen (F)" : "Full screen (F)"} onClick={ctl.toggleReading}>
           <Icon name={reading ? "minimize" : "maximize"} className="sm" />
         </button>
@@ -543,7 +550,7 @@ function FloatDock({ ctl }: { ctl: Ctl }) {
   const area = useAutosize(text, 110);
   const register = ctl.ref("floatInput");
   const send = () => { const value = text.trim(); if (!value) return; setText(""); ctl.sendFloat(value); };
-  const who = b.who === "user" ? "You" : b.who === "hint" ? "Voice Tutor" : "Tutor";
+  const who = b.who === "user" ? "You" : "Tutor";
 
   return (
     <div className="float-dock" ref={ctl.ref("floatDock")} onMouseEnter={() => ctl.dockHover(true)} onMouseLeave={() => ctl.dockHover(false)}>
@@ -580,9 +587,10 @@ function MobileTabs({ ctl }: { ctl: Ctl }) {
   const tab = useStore(ctl.store, (s) => s.layout.tab);
   const tabs: [Tab, string, string][] = [["sources", "list", "Sources"], ["chat", "chat", "Chat"], ["page", "file", "Page"]];
   return (
-    <nav className="mobile-tabs">
+    <nav className="mobile-tabs" aria-label="Sections">
       {tabs.map(([key, ic, label]) => (
-        <button key={key} className={key === tab ? "on" : ""} data-tab={key} onClick={() => ctl.setTab(key)}><Icon name={ic} />{label}</button>
+        <button key={key} className={key === tab ? "on" : ""} data-tab={key} aria-current={key === tab ? "page" : undefined}
+          onClick={() => ctl.setTab(key)}><Icon name={ic} />{label}</button>
       ))}
     </nav>
   );

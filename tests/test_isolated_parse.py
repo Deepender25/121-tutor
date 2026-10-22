@@ -46,3 +46,25 @@ def test_a_reader_that_dies_fails_the_job_not_the_server():
     with pytest.raises(PdfReaderDied):
         parse_pdf_isolated(FIXTURES / "sample_toc.pdf")
     killer.join()
+
+
+def _hang(conn, path, fallback_every):  # module level: the spawned child must be able to import it
+    time.sleep(30)
+
+
+def test_a_reader_that_hangs_is_stopped_at_its_deadline(monkeypatch):
+    from tutor.ingest import isolated
+
+    monkeypatch.setattr(isolated, "_child", _hang)
+    started = time.monotonic()
+    with pytest.raises(PdfReaderDied, match="took longer than"):
+        parse_pdf_isolated(FIXTURES / "sample_toc.pdf", timeout_s=2)
+    assert time.monotonic() - started < 15
+    assert not [p for p in multiprocessing.active_children() if p.name == "pdf-reader"]
+
+
+def test_the_deadline_grows_with_the_page_count(tmp_path):
+    from tutor.ingest.isolated import _deadline_for
+
+    assert _deadline_for(FIXTURES / "sample_toc.pdf") == 300  # 6 pages: the 5-minute floor
+    assert _deadline_for(tmp_path / "missing.pdf") == 300

@@ -25,8 +25,9 @@ import time
 import webbrowser
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):  # not when something (a test runner) has replaced the stream
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 import httpx  # noqa: E402
 
@@ -153,6 +154,13 @@ def set_console_title(title: str) -> None:
 
 # ---------------------------------------------------------------- build
 
+def ui_window_still_open() -> int:
+    """Rebuilding replaces the files the running UI server is serving from (frontend/.next): it would break."""
+    say('[error] The interface changed, but the "Voice Tutor - UI" window from an earlier start is still running.')
+    say("Close that window, then run run.bat again.")
+    return 1
+
+
 def build() -> int:
     node, version = find_node()
     if not node:
@@ -170,6 +178,8 @@ def build() -> int:
 
     lock = file_hash(FRONTEND / "package-lock.json")
     if not NEXT_BIN.exists() or not DEPS_STAMP.exists() or DEPS_STAMP.read_text(encoding="utf-8") != lock:
+        if ui_running():
+            return ui_window_still_open()
         say(f"Installing the interface's packages (Node.js {version}). The first time takes a minute.")
         if run_logged(npm + ["ci", "--no-audit", "--no-fund"], "npm ci") != 0:
             say("Common fixes: check your internet connection; pause OneDrive syncing; run this file again.")
@@ -180,6 +190,8 @@ def build() -> int:
     if BUILD_ID.exists() and BUILD_STAMP.exists() and BUILD_STAMP.read_text(encoding="utf-8") == stamp:
         say(f"Interface is up to date (Node.js {version})")
         return 0
+    if ui_running():
+        return ui_window_still_open()
     say("Building the interface. This takes about a minute the first time.")
     if run_logged([node, str(NEXT_BIN), "build"], "next build") != 0:
         return 1

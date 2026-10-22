@@ -1,4 +1,4 @@
-// Time and greeting formatting (shared by home and notebook views).
+// Time, greeting and count formatting (shared by home and notebook views).
 
 export function timeAgo(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -43,3 +43,13 @@ export function plain(text: string | null | undefined): string {
   return (text || "").replace(EMOJI, " ").replace(/\s{2,}/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
 }
 
+/** "1 source", "3 sources". */
+export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** A reading position's pages in prose: "Page 12", or "Pages 12–13" (en dash). Chips keep "p. 12-13". */
+export function pagesLabel(pages: string | number | null | undefined): string {
+  const p = String(pages ?? "").trim();
+  if (!p) return "";
+  const [first, last] = p.split(/\s*[-–]\s*/);
+  return last && last !== first ? `Pages ${first}–${last}` : `Page ${first}`;
+}

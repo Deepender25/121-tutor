@@ -25,6 +25,9 @@ function toSignIn() {
   location.assign(`/login?next=${encodeURIComponent(location.pathname + location.search)}`);
 }
 
+/** Thrown for a non-2xx answer: the server's message, plus the HTTP status. */
+export type HttpError = Error & { status?: number };
+
 const OFFLINE = "Can't reach the Voice Tutor server. Is it running? Start it with run.bat.";
 const SLOW = "The server took too long to answer. Check the “Voice Tutor - API” window or logs\\errors.log.";
 
@@ -53,8 +56,11 @@ async function request<T>(method: string, url: string, body?: unknown, isForm = 
   if (res.status === 401 && !url.startsWith("/api/auth/")) toSignIn();
   if (!res.ok) {
     // A proxy error page (API window closed) is not JSON: say so plainly.
-    if (res.status >= 500 && typeof data?.detail !== "string") throw new Error(OFFLINE);
-    throw new Error(typeof data?.detail === "string" ? data.detail : `Request failed (${res.status})`);
+    const message = res.status >= 500 && typeof data?.detail !== "string" ? OFFLINE
+      : typeof data?.detail === "string" ? data.detail : `Request failed (${res.status})`;
+    const err = new Error(message) as HttpError;
+    err.status = res.status; // callers can tell "gone" (404) from "try again" (5xx)
+    throw err;
   }
   return data as T;
 }

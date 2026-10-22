@@ -146,6 +146,12 @@ def _worker_main(conn, model_name: str, dim: int, safe: bool) -> None:
         crash_file.flush()
         conn.send(("info", info))
 
+        try:  # the "Loading weights" bar on every start; downloads (huggingface_hub) still show their progress
+            from transformers.utils import logging as hf_logging
+
+            hf_logging.disable_progress_bar()
+        except Exception:
+            pass
         from tutor.retrieval.embedder import Embedder
 
         model = Embedder(model_name, dim)
@@ -189,6 +195,7 @@ class EmbedderClient:
         self.info: dict = {}
         self._proc = None
         self._conn = None
+        self._closed = False  # set by close(): never start a new worker while the app shuts down
         self._lock = threading.Lock()
         # The tokenizer (for chunking) lives here, loaded while the worker starts the model.
         self.tokenizer = None
@@ -268,6 +275,7 @@ class EmbedderClient:
 
     def close(self) -> None:
         with self._lock:
+            self._closed = True
             if self._conn is not None:
                 try:
                     self._conn.send(("stop",))
@@ -282,6 +290,8 @@ class EmbedderClient:
     # ---- encoding
 
     def _encode_once(self, texts: list[str], batch: int) -> np.ndarray:
+        if self._closed:  # an indexing job still running at shutdown: don't respawn the worker for it
+            raise RuntimeError("The app is shutting down")
         if self._proc is None or not self._proc.is_alive():
             self._start()
         try:

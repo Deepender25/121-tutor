@@ -8,6 +8,28 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # .env in the project root; real environment variables take precedence.
 load_dotenv(PROJECT_ROOT / ".env", override=False)
+os.environ.setdefault("LANCEDB_LOG", "error")  # lance's Rust logger prints a WARN on every new table
+
+
+def _int_env(name: str, default: int) -> int:
+    """A whole-number setting; a typo in .env stops the app with a plain sentence instead of a traceback."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise SystemExit(f"{name} must be a whole number (it is '{raw}'). Fix it in .env.") from None
+
+
+def _choice_env(name: str, default: str, choices: tuple[str, ...]) -> str:
+    """One of a few words, compared in lower case ('Low' is 'low')."""
+    raw = os.environ.get(name, "")
+    value = raw.strip().lower() or default
+    if value not in choices:
+        raise SystemExit(f"{name} must be one of {', '.join(choices)} (it is '{raw}'). Fix it in .env.")
+    return value
+
 
 # Data lives outside OneDrive: Lance writes many small versioned files and sync clients lock them.
 DATA_ROOT = Path(
@@ -40,7 +62,7 @@ EMBEDDING_PROMPT_VERSION = 1  # same "title: … | text: …" / "task: search re
 # document chunks the same way whichever mode indexed it. Online mode loads only the tokenizer file, never the model.
 TOKENIZER_MODEL = OFFLINE_EMBEDDING_MODEL
 # Online: requests per minute to stay under (the free tier allows 100 texts a minute; raise it on a paid tier).
-ONLINE_EMBED_PER_MINUTE = max(10, int(os.environ.get("VOICE_TUTOR_ONLINE_EMBED_PER_MINUTE", "100")))
+ONLINE_EMBED_PER_MINUTE = max(10, _int_env("VOICE_TUTOR_ONLINE_EMBED_PER_MINUTE", 100))
 
 # Chunking (tokens, measured with the embedding model's tokenizer).
 CHUNK_TARGET_TOKENS = 550
@@ -56,16 +78,16 @@ FALLBACK_SECTION_PAGES = 5
 LIVE_MODEL = os.environ.get("VOICE_TUTOR_LIVE_MODEL", "gemini-3.8-live")
 # Voice activity detection: how long a pause ends your turn. Higher = you can pause to think mid-sentence
 # without the tutor jumping in (costs that much extra delay before each reply).
-VAD_SILENCE_MS = int(os.environ.get("VOICE_TUTOR_VAD_SILENCE_MS", "1000"))
-VAD_END_SENSITIVITY = os.environ.get("VOICE_TUTOR_VAD_END_SENSITIVITY", "low")  # "low" | "high"
+VAD_SILENCE_MS = _int_env("VOICE_TUTOR_VAD_SILENCE_MS", 1000)
+VAD_END_SENSITIVITY = _choice_env("VOICE_TUTOR_VAD_END_SENSITIVITY", "low", ("low", "high"))
 # How readily sound counts as you starting to talk (which interrupts the tutor). "low": a clear voice still does,
 # but the tutor's own voice coming back through a phone speaker, or background noise, doesn't cut it off.
-VAD_START_SENSITIVITY = os.environ.get("VOICE_TUTOR_VAD_START_SENSITIVITY", "low")  # "low" | "high"
+VAD_START_SENSITIVITY = _choice_env("VOICE_TUTOR_VAD_START_SENSITIVITY", "low", ("low", "high"))
 # How long a sound must last before it counts as you starting to talk. Without it, on a phone speaker short bursts
 # (the tutor's own voice coming back, a knock) cut the tutor off again and again and reached Gemini as one-syllable
 # "words" ("bed", "pet", "net"): 13 interruptions in 2.5 minutes in one session. Speech that's meant to interrupt
 # ("wait, wait") lasts longer than this. Lower it if very short answers get missed.
-VAD_PREFIX_MS = int(os.environ.get("VOICE_TUTOR_VAD_PREFIX_MS", "300"))
+VAD_PREFIX_MS = _int_env("VOICE_TUTOR_VAD_PREFIX_MS", 300)
 # Diagnostics for sound problems: save each voice session's audio in both directions (what the tutor sent, what
 # the microphone sent) as WAV files with a timeline, in <data>/debug-audio, keeping the last few sessions.
 # Off by default: it records your voice. Turn it on only while investigating, then off again.
@@ -89,12 +111,12 @@ SETTINGS_FILE = DATA_ROOT / "settings.json"
 
 # Web app: the UI (Next.js, frontend/) is what you open; it forwards /api to the Python API server.
 HOST = os.environ.get("VOICE_TUTOR_HOST", "127.0.0.1")
-PORT = int(os.environ.get("VOICE_TUTOR_PORT", "8765"))  # UI
-API_PORT = int(os.environ.get("VOICE_TUTOR_API_PORT", "8766"))  # FastAPI (this package)
+PORT = _int_env("VOICE_TUTOR_PORT", 8765)  # UI
+API_PORT = _int_env("VOICE_TUTOR_API_PORT", 8766)  # FastAPI (this package)
 UI_URL = f"http://{HOST}:{PORT}"
 API_URL = f"http://{HOST}:{API_PORT}"
-MAX_UPLOAD_MB = int(os.environ.get("VOICE_TUTOR_MAX_UPLOAD_MB", "200"))
-MAX_LIVE_SESSIONS = int(os.environ.get("VOICE_TUTOR_MAX_LIVE_SESSIONS", "3"))  # voice sessions open at once
+MAX_UPLOAD_MB = _int_env("VOICE_TUTOR_MAX_UPLOAD_MB", 200)
+MAX_LIVE_SESSIONS = _int_env("VOICE_TUTOR_MAX_LIVE_SESSIONS", 3)  # voice sessions open at once
 
 # ---- Hosting (frontend on Vercel, API on a server). All off by default: locally nothing changes. ----
 # The sites allowed to call this API from a browser (CORS + Origin checks), e.g. https://tutor.edgedrop.app.

@@ -3,7 +3,7 @@
     python query.py "how big should the tank be?"         hybrid search (default: last ingested doc)
     python query.py --read next | start | s003 | page:4   move the reading cursor
     python query.py --outline
-    python query.py --eval tests/questions.yaml           hit-rate on an eval set
+    python query.py --eval tests/questions_sample.yaml    hit-rate on an eval set
 """
 
 import argparse

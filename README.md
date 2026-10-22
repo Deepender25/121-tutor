@@ -1,7 +1,7 @@
 # Voice Tutor
 
 Talk one-to-one with your PDFs, like NotebookLM but as a live voice conversation. One partner that is
-your **tutor** (teaches the material in order and tracks progress), **explainer** (answers from your
+your **tutor** (teaches the material in order and remembers where you stopped), **explainer** (answers from your
 sources with page references), **researcher** (checks the web and says which is which) and
 **brainstormer**. Design and decisions: [DESIGN.md](DESIGN.md).
 
@@ -34,8 +34,8 @@ PDFs are indexed for search with an embedding model. Choose where it runs with `
 
 Restart the app after changing it; Settings shows which one is active. The two models' results can't be mixed, so
 each source keeps a separate index per model. Sources indexed with the other one are updated automatically in the
-background ("Updating search" in Sources), from the text already stored: no re-reading of the PDF, and your progress
-stays. Until a source is updated, searching it still works by keywords. Switching back later is instant, since both
+background ("Updating search" in Sources), from the text already stored: no re-reading of the PDF, and your reading
+position stays. Until a source is updated, searching it still works by keywords. Switching back later is instant, since both
 indexes are kept. On the free tier, online indexing runs at about 100 chunks a minute (a 50-page PDF takes about 2
 minutes); the app paces itself and waits when Google asks it to.
 

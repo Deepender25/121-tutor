@@ -5,12 +5,18 @@ and can be shared by several notebooks; it's deleted only when no notebook uses 
 """
 
 import json
+import logging
 import random
 import secrets
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from tutor.fileio import write_json
+
+log = logging.getLogger("notebooks")
+_warned: set[Path] = set()  # unreadable notebook files already reported (all() runs on every list)
 
 HISTORY_CAP = 300
 # Notebook icons (Lucide names, without the "nb-" prefix the frontend uses).
@@ -72,10 +78,8 @@ class NotebookStore:
 
     def _write(self, nb: Notebook) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
-        path = self._path(nb.id)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(nb), indent=1, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        # <stem>-xxxx.tmp, then a swap retried while Windows has the file open; all() only globs *.json
+        write_json(self._path(nb.id), asdict(nb))
 
     def _load(self, path: Path) -> Notebook:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -96,7 +100,15 @@ class NotebookStore:
         with self._lock:
             if not self.folder.exists():
                 return []
-            notebooks = [self._load(p) for p in self.folder.glob("*.json")]
+            notebooks = []
+            for path in self.folder.glob("*.json"):
+                try:
+                    notebooks.append(self._load(path))
+                except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError, AttributeError, OSError) as e:
+                    # One damaged file mustn't take the whole library down; it's left in place to be recovered.
+                    if path not in _warned:
+                        _warned.add(path)
+                        log.warning("Skipping notebook file %s: it can't be read (%s)", path.name, e)
             self._assign_covers(notebooks)
             return sorted(notebooks, key=lambda n: n.updated_at, reverse=True)
 
@@ -114,7 +126,7 @@ class NotebookStore:
     def create(self, name: str, icon: str | None = None) -> Notebook:
         with self._lock:
             now = _now()
-            nb = Notebook(secrets.token_hex(6), name.strip() or "Untitled notebook", "", now, now,
+            nb = Notebook(secrets.token_hex(6), (name or "").strip()[:120] or "Untitled notebook", "", now, now,
                           icon=icon if icon in ICONS else random.choice(ICONS), cover=self._least_used_cover(self.all()))
             self._write(nb)
             return nb

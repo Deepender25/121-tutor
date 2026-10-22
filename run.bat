@@ -24,6 +24,8 @@ set "STAMP=%VENV%\.deps-installed"
 set "LOGDIR=%ROOT%\logs"
 set "SETUPLOG=%LOGDIR%\setup.log"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
+rem Keep the setup log from growing forever: past 5 MB it becomes setup.log.1 (replacing the older one).
+for %%A in ("%SETUPLOG%") do if %%~zA GTR 5000000 move /y "%SETUPLOG%" "%SETUPLOG%.1" >nul
 >>"%SETUPLOG%" echo.
 >>"%SETUPLOG%" echo ===== run.bat %DATE% %TIME% =====
 
@@ -109,7 +111,8 @@ if not exist ".env" (
 findstr /r /c:"^GEMINI_API_KEY=..*" ".env" >nul 2>&1
 if errorlevel 1 (
     echo       GEMINI_API_KEY is empty: voice is disabled until you add your free key to .env
-    echo       ^(get one at https://aistudio.google.com/apikey^), then restart.
+    echo       ^(get one at https://aistudio.google.com/apikey^), then close the "Voice Tutor - API" window
+    echo       and run this file again.
 )
 
 rem ---------------------------------------------------------------- 4. user interface

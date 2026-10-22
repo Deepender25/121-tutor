@@ -1,6 +1,7 @@
 """Render PDF pages to PNG (cached on disk) and locate passage text on a page for highlighting."""
 
 import json
+import math
 from collections import OrderedDict
 import re
 import threading
@@ -16,6 +17,8 @@ _MARKDOWN = re.compile(r"[*_`#>|]+|\[|\]\([^)]*\)")
 
 
 def render_page(pdf: Path, page: int, scale: float, cache_dir: Path) -> bytes:
+    if not math.isfinite(scale):  # ?scale=nan or inf: min/max would keep nan
+        scale = 1.6
     scale = round(min(max(scale, 0.75), 3.0), 2)
     cached = cache_dir / f"{page}@{scale}.png"
     if cached.exists():

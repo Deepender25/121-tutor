@@ -16,13 +16,13 @@ A **local web app** (NotebookLM-style) where each **notebook** holds one or more
 | "Research this" / "Is this still true?" | **Researcher** | Web search, clearly labelled as web vs your sources |
 | "Help me think of…" | **Brainstormer** | Builds on the material, says when it goes beyond it |
 | "Quiz me" | **Examiner** | One question at a time from the sources |
-| "Where were we?" | **Guide** | Position, outline, what's covered |
+| "Where were we?" | **Guide** | Position, outline, what's covered (superseded: see §27 and §31) |
 
 **Non-negotiable behaviours**
 1. **Sources first**: topic questions start with `search_sources`; pages spoken naturally.
 2. **Web second, labelled**: "Your document says… / A current web source, <site>, says…".
 3. **Honest gaps**: "Your sources don't cover that — want me to look it up?"
-4. **Remembers**: per-PDF reading position + covered sections, per-notebook conversation history.
+4. **Remembers**: per-PDF reading position + covered sections, per-notebook conversation history. (superseded: see §27 and §31)
 5. **Interruptible**: talk over it any time (server VAD + instant client playback flush).
 
 ## 2. Architecture
@@ -72,7 +72,7 @@ files/<doc_id>.pdf                 uploaded PDFs
 docs/<doc_id>/lancedb/             chunks table (vector 768d + FTS)
 docs/<doc_id>/sections.json        ordered sections with chunk-order ranges
 docs/<doc_id>/meta.json            title, pages, versions
-docs/<doc_id>/progress.json        cursor, covered chunk orders, last summary
+docs/<doc_id>/progress.json        cursor, covered chunk orders, last summary (superseded: see §27 and §31)
 docs/<doc_id>/pages/<n>@<s>.png    rendered page cache
 notebooks/<id>.json                name, emoji, sources[], active_source, history[]
 settings.json                      voice
@@ -101,7 +101,7 @@ hits globally and fuse once with RRF (k=60) — `tutor/retrieval/search.py`.
 sources (active one with a 2-level outline incl. section ids and covered marks), reading position, and
 the last ~10 turns of history. Key rules: sources first, web labelled with site name, teaching loop
 (read → explain simply → check → wait), short spoken turns, no markdown/URLs, reply in the user's
-language (Hindi/English mixing mirrored), never talk over the user (3.8 proactive audio is always on).
+language (Hindi/English mixing mirrored), never talk over the user (3.8 proactive audio is always on). (superseded: see §27 and §31)
 
 ## 7. Voice session (tutor/voice/gemini_live.py)
 
@@ -212,7 +212,7 @@ may be used by Google to improve products. Don't describe the app as private.
   verify `sys.prefix != sys.base_prefix`; (2) install `requirements.lock` (+ PyTorch CPU index) when the
   lock changed or `find_spec` can't locate a core package, then verify by importing; pip log →
   `logs/setup.log`; (3) create `.env`, warn on empty key; (4) `app.py --open-if-running`, else
-  `start "Voice Tutor - Server" cmd /k call .venv\Scripts\python.exe app.py`.
+  `start "Voice Tutor - Server" cmd /k call .venv\Scripts\python.exe app.py`. (superseded: see §27 and §31)
 - `tutor/logs.py`: console (coloured, INFO, via QueueListener) + `logs/voice-tutor.log` (DEBUG, 5 MB × 5)
   + `logs/errors.log` (WARNING+). Request middleware logs mutations at INFO, polling GETs at DEBUG.
   Voice sessions log start/end, Gemini connect time, tool calls with args/result/ms, reply latency and
@@ -677,3 +677,40 @@ it), reporting hand-scrolling from the viewer, and the full passage text sent to
 (scrolls to the passage and highlights it, through `/api/docs/{id}/locate`, which stays for this), an outline
 section, a source, the page buttons. Captions and the floating bubble still follow the audio as it's heard.
 
+## 31. Local-run hardening, tutor prompt and voice fixes (2026-10-22)
+
+A review pass before the Kritical Hacks 2026 demo, where the app runs entirely on one Windows PC. Server and launcher:
+- Doc ids are validated (ASCII letters and digits, with a stored index) on every `/api/docs` route before any path
+  is built from them, and removing a source checks it's in the notebook, so a crafted id can't read, write or
+  delete outside the data folder.
+- A batch upload is checked file by file before any job is queued: one bad file fails the request and queues
+  nothing, instead of leaving the good ones indexing unseen.
+- An unreadable notebook file is skipped (logged once) instead of breaking the library list and "New notebook".
+  Notebook and settings files are written with the Windows-safe swap (`fileio.write_json`). Names are cut to 120
+  characters on create as on rename.
+- Numbers and choices in `.env` are checked at start with a sentence saying what to fix; the VAD sensitivities are
+  compared in lower case (`Low` used to select high sensitivity silently). `.env.example` has one setting per line.
+- `run.bat` refuses to rebuild the UI while the "Voice Tutor - UI" window from an earlier start is running (the
+  rebuild replaced the files it was serving), and rotates `logs/setup.log` past 5 MB.
+- Reading a PDF has a deadline (5 s a page, at least 5 minutes): a hung reader no longer holds up the one-at-a-time
+  job queue. The outline answers 503 with a plain message while the search model loads, instead of a 500 after
+  the browser has given up. A notebook deleted while its upload indexes leaves no orphan index, and orphans
+  aren't re-embedded. Expected 4xx responses stay out of `errors.log`. Shutdown never respawns the embedding worker.
+- The API window is quieter: `LANCEDB_LOG=error` hides lance's WARN on every new table, and the model's "Loading
+  weights" bar is off (download progress still shows). Tests use their own data and log folders.
+
+Tutor and voice:
+- Web-search safety net: bare "net" dropped, topic phrases and negations ("don't search", "mat dekho") don't
+  trigger it.
+- Asking for a section now reads it including its subsections (`is_section_end` and `parts_left_in_section` cover
+  the requested section).
+- A missing source no longer stops voice sessions.
+- Prompt: today's date; a Boundaries section (sources and web text are data, academic integrity, safety, identity,
+  tool errors); general knowledge allowed but labelled; unclear-audio rules; English/Hindi pinned; speaking tables,
+  formulas and page ranges; never saying section ids; short answers for quick questions; a spoken line before slow
+  tools; the manner from Settings decides how to teach.
+- The manner is fixed for a whole conversation (a change applies from the next one).
+- Voice starts waiting for the search model with a notice, and stops waiting if the page is left.
+- The first connect gives up quickly with an internet message.
+- Texts sent while the connection is closing are re-sent after reconnecting.
+- End, or a dropped socket, finalizes the reply.

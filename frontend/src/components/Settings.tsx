@@ -55,6 +55,21 @@ async function playPreview(voice: string) {
   }
 }
 
+// ---------------------------------------------------------------- key help
+// The one instruction for adding the key, shown in Settings and above the conversation. run.bat only reopens
+// the browser when both servers are already up, and the API reads .env when it starts, so the API window has
+// to be closed first.
+
+export function KeyHelp() {
+  return (
+    <>
+      Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">aistudio.google.com/apikey</a>,
+      add it to the <code>.env</code> file in the project folder as <code>GEMINI_API_KEY=…</code>, then close the
+      “Voice Tutor - API” window and run run.bat again.
+    </>
+  );
+}
+
 // ---------------------------------------------------------------- sheet
 
 let settingsOpen = false;
@@ -91,11 +106,13 @@ function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
 
   const save = async () => {
     setSaving(true);
+    // Measured before saving: refreshStatus() below replaces `s` with what was just saved.
+    const voiceChanged = !!s && chosen !== s.voice;
     try {
       await api.saveSettings({ voice: chosen, style });
       await refreshStatus();
       toast("Settings saved", "success");
-      window.dispatchEvent(new CustomEvent("vt-settings", { detail: { voice: chosen } }));
+      window.dispatchEvent(new CustomEvent("vt-settings", { detail: { voice: chosen, voiceChanged, styleChanged } }));
       close(true);
     } catch (e) {
       toast((e as Error).message, "error", 6000);
@@ -108,7 +125,9 @@ function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
       <div className="sheet-head">
         <div><h2>Settings</h2><p>{s?.auth === "on"
           ? "Your notebooks live on your own server; voice runs on Gemini."
-          : "Everything runs on this computer except the voice model."}</p></div>
+          : s?.embedding_mode === "online"
+            ? "Your notebooks stay on this computer. The voice, web search and PDF indexing use the internet."
+            : "Your PDFs are indexed on this computer. The voice and web search use the internet."}</p></div>
         <button className="icon-btn" aria-label="Close settings" onClick={() => close()}><Icon name="x" /></button>
       </div>
       <div className="sheet-body scroll">
@@ -117,7 +136,7 @@ function SettingsSheet({ close }: { close: (v?: unknown) => void }) {
         ) : null}
         {s && !s.gemini_key ? (
           <div className="banner"><Icon name="key" />
-            <div><b>Gemini API key missing. </b>Get a free key at aistudio.google.com/apikey, paste it into <code>.env</code> after <code>GEMINI_API_KEY=</code> and restart run.bat.</div>
+            <div><b>Gemini API key missing. </b><KeyHelp /></div>
           </div>
         ) : null}
 
@@ -291,11 +310,11 @@ export function StatusPill() {
   if (!s) { cls = "bad"; text = "Server offline"; }
   else if (!s.gemini_key) { cls = "warn"; text = "Add Gemini key"; }
   else if (s.embedder === "loading") { cls = "warn"; text = "Warming up"; }
-  else if (s.embedder === "error") { cls = "bad"; text = "Model error"; }
+  else if (s.embedder === "error") { cls = "bad"; text = "Search model error"; }
   if (!text) return null;
   return (
-    <button className={`pill ${cls} status-pill`} title="Open settings" onClick={() => openSettings()}>
-      <span className="dot" />{text}
+    <button className={`pill ${cls} status-pill`} title={`${text} · open settings`} aria-label={`${text}. Open settings`} onClick={() => openSettings()}>
+      <span className="dot" /><span className="pill-text">{text}</span>
     </button>
   );
 }

@@ -1,9 +1,9 @@
 "use client";
-// Client-side app chrome shared by every page: overlay hosts, server status polling, closing dialogs on
+// Client-side app chrome shared by every page: overlay hosts, server status polling (and a re-check when the tab regains focus), closing dialogs on
 // navigation, and redirecting links from the old single-page app (/#/nb/<id>) to real routes.
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { startStatusPolling } from "@/lib/status";
+import { startStatusPolling, startStatusWatch } from "@/lib/status";
 import { installTooltips } from "@/lib/tooltip";
 import { keepScreenOn } from "@/lib/wake-lock";
 import { closeAllOverlays, OverlayHosts } from "./overlays";
@@ -13,7 +13,7 @@ export function AppShell() {
   const router = useRouter();
 
   // Not on the sign-in page: there's no session yet to ask with (signing in reloads the page, which starts it).
-  useEffect(() => { if (!location.pathname.startsWith("/login")) startStatusPolling(); }, []);
+  useEffect(() => { if (!location.pathname.startsWith("/login")) { startStatusPolling(); startStatusWatch(); } }, []);
 
   useEffect(() => keepScreenOn(), []); // phones: the screen stays on while the app is open
   useEffect(() => installTooltips(), []); // data-tip="…" anywhere

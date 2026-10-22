@@ -249,3 +249,128 @@ def test_voice_preview_is_generated_once_and_cached(client, monkeypatch):
     second = client.get("/api/voices/Leda/preview")
     assert second.content == first.content and calls == ["Leda"]  # served from cache the second time
     assert client.get("/api/voices/Nobody/preview").status_code == 404
+
+
+def test_doc_routes_refuse_ids_that_are_paths(client, notebook, tmp_path):
+    """A doc id is letters and digits only: one that is a path never reaches the filesystem (no page renders
+    or caches written next to some other PDF, no rmtree outside the data folder)."""
+    import shutil
+    import urllib.parse
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.copy(SAMPLE, outside / "sample_toc.pdf")
+    for crafted in (urllib.parse.quote(str(outside / "sample_toc"), safe=""), "..%5C..%5Cx"):
+        for path in (f"/api/docs/{crafted}/pages", f"/api/docs/{crafted}/page/1.png",
+                     f"/api/docs/{crafted}/page/1/find?text=abcdef", f"/api/docs/{crafted}/locate?text=abc def ghi",
+                     f"/api/docs/{crafted}/file", f"/api/docs/{crafted}/outline"):
+            r = client.get(path)
+            assert r.status_code == 404 and r.json()["detail"] == "Source not found", path  # the route's own 404
+    assert not (outside / "pages").exists() and not (outside / "sample_toc" / "pages").exists()
+    assert sorted(p.name for p in outside.iterdir()) == ["sample_toc.pdf"]
+
+    nb = client.get(f"/api/notebooks/{notebook['id']}").json()
+    r = client.delete(f"/api/notebooks/{notebook['id']}/sources/..%5Cx")
+    assert r.status_code == 404 and r.json()["detail"] == "That source isn't in this notebook"
+    assert client.delete(f"/api/notebooks/{notebook['id']}/sources/abc123def456").status_code == 404
+    after = client.get(f"/api/notebooks/{notebook['id']}").json()
+    assert after["sources"] == nb["sources"] and (config.doc_dir(notebook["doc_id"]) / "meta.json").exists()
+
+
+def test_outline_while_the_search_model_loads_is_a_503(client, notebook, monkeypatch, caplog):
+    from tutor.server.app import state
+
+    def still_loading(timeout=180):
+        raise RuntimeError("The embedding model is still loading. Try again in a moment.")
+
+    monkeypatch.setattr(state, "require_embedder", still_loading)
+    monkeypatch.setattr(state, "embedder_error", None)
+    with caplog.at_level("DEBUG"):
+        r = client.get(f"/api/docs/{notebook['doc_id']}/outline")
+    assert r.status_code == 503
+    assert r.json()["detail"] == "The search model is still loading. The outline appears when it's ready."
+    assert not any(rec.exc_info for rec in caplog.records) and "Traceback" not in caplog.text
+    monkeypatch.setattr(state, "embedder_error", "no memory")
+    assert client.get(f"/api/docs/{notebook['doc_id']}/outline").json()["detail"].startswith("The embedding model")
+
+
+def test_a_batch_with_one_bad_file_queues_nothing(client):
+    from tutor.server.app import state
+
+    nb = client.post("/api/notebooks", json={"name": "Batch"}).json()
+    with SAMPLE.open("rb") as f:
+        r = client.post(f"/api/notebooks/{nb['id']}/sources", files=[
+            ("files", (SAMPLE.name, f, "application/pdf")), ("files", ("bad.pdf", b"nope", "application/pdf"))])
+    assert r.status_code == 415 and r.json()["detail"] == "bad.pdf isn't a PDF"
+    assert state.jobs.for_notebook(nb["id"], include_finished=True) == []
+    assert not list(config.FILES_DIR.glob("upload-*.part"))
+    time.sleep(1)
+    assert client.get(f"/api/notebooks/{nb['id']}").json()["sources"] == []
+    client.delete(f"/api/notebooks/{nb['id']}")
+
+
+def test_a_damaged_notebook_file_does_not_break_the_library(client):
+    bad = config.NOTEBOOKS_DIR / "deadbeef0002.json"
+    bad.write_text('{"id": "deadbeef0002", "na', encoding="utf-8")
+    try:
+        r = client.get("/api/notebooks")
+        assert r.status_code == 200 and "deadbeef0002" not in {nb["id"] for nb in r.json()}
+        created = client.post("/api/notebooks", json={"name": "After"})
+        assert created.status_code == 201
+        client.delete(f"/api/notebooks/{created.json()['id']}")
+    finally:
+        bad.unlink()
+
+
+def test_long_names_are_cut_on_create_and_rename(client):
+    nb = client.post("/api/notebooks", json={"name": "x" * 5000}).json()
+    assert len(nb["name"]) == 120
+    assert len(client.patch(f"/api/notebooks/{nb['id']}", json={"name": "y" * 5000}).json()["name"]) == 120
+    client.delete(f"/api/notebooks/{nb['id']}")
+
+
+def test_settings_and_notebook_writes_leave_no_temp_files(client, notebook):
+    client.put("/api/settings", json={"voice": "Kore"})
+    client.patch(f"/api/notebooks/{notebook['id']}", json={"name": "Rainwater"})
+    assert client.get(f"/api/notebooks/{notebook['id']}").json()["name"] == "Rainwater"
+    assert not list(config.NOTEBOOKS_DIR.glob("*.tmp")) and not list(config.DATA_ROOT.glob("*.tmp"))
+
+
+def test_deleting_a_notebook_while_its_upload_indexes(client):
+    from tutor.server.app import state
+
+    import threading
+
+    gate = threading.Event()  # holds the one-at-a-time queue, so the notebook is surely gone before indexing ends
+    blocker = state.jobs.submit("", "gate", lambda job: gate.wait(60))
+    nb = client.post("/api/notebooks", json={"name": "Gone soon"}).json()
+    fixture = Path(__file__).parent / "fixtures" / "sample_notoc.pdf"
+    try:
+        with fixture.open("rb") as f:
+            job = client.post(f"/api/notebooks/{nb['id']}/sources",
+                              files={"files": (fixture.name, f, "application/pdf")}).json()["jobs"][0]
+        assert client.delete(f"/api/notebooks/{nb['id']}").status_code == 204
+    finally:
+        gate.set()
+    state.jobs.dismiss(blocker.id)
+    deadline = time.time() + 300
+    while (current := state.jobs.get(job["id"])).status not in ("done", "error"):
+        assert time.time() < deadline, "ingest timed out"
+        time.sleep(0.3)
+    assert current.status == "done", current.to_dict()
+    assert not config.doc_dir(current.doc_id).exists()
+    assert not (config.FILES_DIR / f"{current.doc_id}.pdf").exists()
+
+
+def test_expected_4xx_stay_out_of_the_error_log(client, notebook, caplog):
+    with caplog.at_level("DEBUG", logger="http"):
+        assert client.get(f"/api/docs/{notebook['doc_id']}/page/0.png").status_code == 404
+        assert client.get("/api/notebooks/nope").status_code == 404
+    levels = {r.getMessage().split(" -> ")[0]: r.levelname for r in caplog.records if r.name == "http"}
+    assert levels[f"GET /api/docs/{notebook['doc_id']}/page/0.png"] == "DEBUG"
+    assert levels["GET /api/notebooks/nope"] == "INFO"
+
+
+def test_page_scale_that_is_not_a_number(client, notebook):
+    r = client.get(f"/api/docs/{notebook['doc_id']}/page/1.png?scale=nan")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"

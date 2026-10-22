@@ -71,8 +71,10 @@ async def log_requests(request: Request, call_next):
     status = response.status_code
     if status >= 500:
         level = logging.ERROR
-    elif status >= 400:
+    elif status in (401, 403):  # login and origin refusals belong in errors.log
         level = logging.WARNING
+    elif status >= 400:  # expected (a page past the end, a source just removed): not errors.log material
+        level = logging.DEBUG if request.method == "GET" and path.startswith(_QUIET_GETS) else logging.INFO
     elif request.method == "GET" and (not path.startswith("/api/") or path.startswith(_QUIET_GETS)):
         level = logging.DEBUG
     else:
@@ -92,20 +94,24 @@ def _notebook_or_404(notebook_id: str):
 
 
 def _meta_or_404(doc_id: str) -> dict:
-    meta = read_meta(doc_id) if doc_id.isalnum() else None
+    """The source's metadata. Every /api/docs route comes through here before it builds a path from doc_id:
+    ids are plain letters and digits (ASCII only: str.isalnum() alone accepts other scripts' digits), so a crafted
+    id (one with "..", a slash or a drive letter) can never reach the filesystem."""
+    meta = read_meta(doc_id) if doc_id.isascii() and doc_id.isalnum() else None
     if meta is None:
         raise HTTPException(404, "Source not found")
     return meta
 
 
 def _source_pdf(doc_id: str) -> Path:
+    meta = _meta_or_404(doc_id)  # first: validates doc_id before any path is built from it
     stored = config.FILES_DIR / f"{doc_id}.pdf"
     if stored.exists():
         return stored
-    original = Path(_meta_or_404(doc_id)["source_file"])
+    original = Path(meta["source_file"])
     if original.exists():
         return original
-    raise HTTPException(410, "The original PDF file is missing")
+    raise HTTPException(410, "The original PDF file is missing. Remove this source and add the PDF again.")
 
 
 def _source_info(doc_id: str) -> dict:
@@ -277,24 +283,33 @@ async def upload_sources(notebook_id: str, files: list[UploadFile]):
     _notebook_or_404(notebook_id)
     if not files:
         raise HTTPException(400, "No files")
-    jobs = []
     limit = config.MAX_UPLOAD_MB * 1024 * 1024
-    for upload in files:
-        name = Path(upload.filename or "document.pdf").name
-        part = config.FILES_DIR / f"upload-{secrets.token_hex(6)}.part"
-        size = 0
-        with part.open("wb") as out:
-            while chunk := await upload.read(1024 * 1024):
-                size += len(chunk)
-                if size > limit:
-                    break
-                out.write(chunk)
-        if size > limit:
+    # Pass 1: receive and check every file before queueing anything, so one bad file in a batch doesn't leave
+    # the good ones indexing in the background with no job the browser knows about.
+    received: list[tuple[str, Path]] = []
+    try:
+        for upload in files:
+            name = Path(upload.filename or "document.pdf").name
+            part = config.FILES_DIR / f"upload-{secrets.token_hex(6)}.part"
+            received.append((name, part))
+            size = 0
+            with part.open("wb") as out:
+                while chunk := await upload.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > limit:
+                        break
+                    out.write(chunk)
+            if size > limit:
+                raise HTTPException(413, f"{name} is larger than {config.MAX_UPLOAD_MB} MB")
+            if size == 0 or not is_pdf(part):
+                raise HTTPException(415, f"{name} isn't a PDF")
+    except BaseException:
+        for _, part in received:
             part.unlink(missing_ok=True)
-            raise HTTPException(413, f"{name} is larger than {config.MAX_UPLOAD_MB} MB")
-        if size == 0 or not is_pdf(part):
-            part.unlink(missing_ok=True)
-            raise HTTPException(415, f"{name} isn't a PDF")
+        raise
+    # Pass 2: every file is a PDF within the limit; store each once (same content = same doc_id) and queue it.
+    jobs = []
+    for name, part in received:
         doc_id = await asyncio.to_thread(doc_id_for, part)
         stored = config.FILES_DIR / f"{doc_id}.pdf"
         if stored.exists():
@@ -313,13 +328,22 @@ def _ingest_work(notebook_id: str, pdf: Path, display_name: str):
         job.doc_id, job.title = result.doc_id, result.title
         if state.cache:
             state.cache.drop(result.doc_id)  # re-open with the fresh index
-        state.notebooks.add_source(notebook_id, result.doc_id)
+        try:
+            state.notebooks.add_source(notebook_id, result.doc_id)
+        except KeyError:  # the notebook was deleted while this was indexing: don't leave an index nobody uses
+            if not state.notebooks.is_used(result.doc_id):
+                if state.cache:
+                    state.cache.drop(result.doc_id)
+                delete_document(result.doc_id)
+            log.info("The notebook was deleted while %s was being indexed; discarded it", display_name)
     return work
 
 
 @app.delete("/api/notebooks/{notebook_id}/sources/{doc_id}", status_code=204)
 def remove_source(notebook_id: str, doc_id: str):
-    _notebook_or_404(notebook_id)
+    nb = _notebook_or_404(notebook_id)
+    if doc_id not in nb.sources:  # also keeps a crafted id away from delete_document's rmtree
+        raise HTTPException(404, "That source isn't in this notebook")
     if state.notebooks.remove_source(notebook_id, doc_id):  # nobody else uses it: delete the index
         if state.cache:
             state.cache.drop(doc_id)
@@ -344,7 +368,11 @@ def dismiss_job(job_id: str):
 @app.get("/api/docs/{doc_id}/outline")
 async def doc_outline(doc_id: str):
     _meta_or_404(doc_id)
-    await asyncio.to_thread(state.require_embedder)
+    try:  # short wait: the browser gives up after 20 s, and it asks again once the status says ready
+        await asyncio.to_thread(state.require_embedder, 15)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e) if state.embedder_error
+                            else "The search model is still loading. The outline appears when it's ready.")
     try:
         lesson = state.cache.get(doc_id).lesson
     except DocumentError as e:
@@ -354,13 +382,14 @@ async def doc_outline(doc_id: str):
 
 @app.get("/api/docs/{doc_id}/pages")
 async def page_sizes(doc_id: str):
-    sizes = await asyncio.to_thread(pages.page_sizes, _source_pdf(doc_id), config.doc_dir(doc_id) / "pages")
+    pdf = _source_pdf(doc_id)  # validates doc_id before config.doc_dir() builds a path from it
+    sizes = await asyncio.to_thread(pages.page_sizes, pdf, config.doc_dir(doc_id) / "pages")
     return {"sizes": sizes}
 
 
 @app.get("/api/docs/{doc_id}/page/{page}.png")
 async def page_image(doc_id: str, page: int, scale: float = 1.6):
-    pdf = _source_pdf(doc_id)
+    pdf = _source_pdf(doc_id)  # validates doc_id first
     try:
         png = await asyncio.to_thread(pages.render_page, pdf, page, scale, config.doc_dir(doc_id) / "pages")
     except IndexError:

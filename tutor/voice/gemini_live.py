@@ -11,6 +11,7 @@
 
 import asyncio
 import contextlib
+import functools
 import logging
 import time
 
@@ -36,6 +37,19 @@ MAX_RECONNECTS = 5
 RESUME_ATTEMPTS = 2
 
 FATAL, STALE_HANDLE, TRANSIENT = "fatal", "stale_handle", "transient"
+# A first connect that fails this many times is reported at once (usually no internet), instead of after the
+# full reconnect backoff (about 34 s). Drops in the middle of a session keep the full backoff.
+FIRST_CONNECT_ATTEMPTS = 2
+
+PROMPT_FAILED = ("Couldn't prepare the tutor for this notebook. If a source shows as missing, remove it and add the "
+                 "PDF again. Details are in logs\\voice-tutor.log.")
+UNREACHABLE = "Couldn't reach Gemini. Check your internet connection, then tap the orb to try again."
+
+
+@functools.lru_cache(maxsize=4)
+def _client_for(api_key: str) -> genai.Client:
+    """One client per key, shared by sessions: building one takes about half a second, on the event loop."""
+    return genai.Client(api_key=api_key)
 
 
 def classify_error(e: Exception, resuming: bool) -> str:
@@ -81,7 +95,7 @@ class GeminiLiveSession(VoiceSession):
         emit: EmitFn,
         idle_timeout: float = 300,
     ):
-        self._client = genai.Client(api_key=api_key)
+        self._client = _client_for(api_key)  # shared: never closed here
         self._model = model
         self._voice = voice
         self._build_prompt = build_prompt
@@ -150,7 +164,13 @@ class GeminiLiveSession(VoiceSession):
                 connect_started = time.monotonic()
                 resuming = self._handle is not None
                 try:
-                    async with self._client.aio.live.connect(model=self._model, config=self._config()) as session:
+                    connect_config = self._config()  # builds the system prompt: a bug here won't be fixed by retrying
+                except Exception:
+                    log.exception("Couldn't build the session config")
+                    await self._emit(VoiceEvent("error", {"message": PROMPT_FAILED, "fatal": True}))
+                    break
+                try:
+                    async with self._client.aio.live.connect(model=self._model, config=connect_config) as session:
                         how = (" (resumed the previous session)" if resuming
                                else " (fresh session, recent conversation carried over)" if not first else "")
                         log.info("Connected to %s in %.0f ms%s", self._model,
@@ -166,6 +186,7 @@ class GeminiLiveSession(VoiceSession):
                                                                            "conversation, so just carry on."}))
                         await self._flush_pending_text()
                         await self._receive_loop(session)  # returns on GoAway (reconnect) or close
+                        self._ready.clear()  # closing now: text sent from here on waits for the next connection
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -177,6 +198,10 @@ class GeminiLiveSession(VoiceSession):
                         await self._emit(VoiceEvent("error", {"message": _friendly_error(e), "fatal": True}))
                         break
                     failures += 1
+                    if first and failures >= FIRST_CONNECT_ATTEMPTS:
+                        log.error("Couldn't connect to Gemini Live after %d attempts: %s", failures, e)
+                        await self._emit(VoiceEvent("error", {"message": UNREACHABLE, "fatal": True}))
+                        break
                     if kind == STALE_HANDLE or (resuming and failures >= RESUME_ATTEMPTS):
                         # The server no longer has (or can't restore) the old session: start a new one. The system
                         # prompt carries the reading position and recent conversation, so little is lost.
@@ -239,19 +264,31 @@ class GeminiLiveSession(VoiceSession):
 
     async def send_text(self, text: str) -> None:
         self._touch()
-        if self._session is None or not self._ready.is_set():
+        session = self._session
+        if session is None or not self._ready.is_set():
             self._pending_text.append(text)
             return
-        await self._send_text_now(text)
+        try:
+            await self._send_text_now(session, text)
+        except Exception as e:  # the connection is closing (GoAway, drop): keep the text for the next one
+            log.info("Couldn't send a message while the connection was closing (%s); sending it after reconnecting", e)
+            self._pending_text.append(text)
 
-    async def _send_text_now(self, text: str) -> None:
-        await self._session.send_client_content(
+    @staticmethod
+    async def _send_text_now(session, text: str) -> None:
+        await session.send_client_content(
             turns=types.Content(role="user", parts=[types.Part(text=text)]), turn_complete=True
         )
 
     async def _flush_pending_text(self) -> None:
         while self._pending_text and self._session is not None:
-            await self._send_text_now(self._pending_text.pop(0))
+            text = self._pending_text.pop(0)
+            try:
+                await self._send_text_now(self._session, text)
+            except Exception as e:
+                log.info("Couldn't send a queued message (%s); trying again after reconnecting", e)
+                self._pending_text.insert(0, text)
+                return
 
     # ---- output ------------------------------------------------------------------------
 

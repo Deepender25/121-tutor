@@ -7,6 +7,7 @@ import threading
 import time
 
 from tutor import config
+from tutor.fileio import write_json
 from tutor.library import DocumentCache
 from tutor.notebooks import NotebookStore
 from tutor.server.jobs import JobQueue
@@ -74,7 +75,8 @@ class AppState:
         """Queue documents indexed with the other embedding model (EMBEDDING_MODEL changed) for re-embedding."""
         from tutor.library import missing_embeddings
 
-        missing = missing_embeddings(self.embedder)
+        # Only documents a notebook still uses: an orphan (say, left by a crash mid-delete) isn't worth the time.
+        missing = [d for d in missing_embeddings(self.embedder) if self.notebooks.is_used(d)]
         if missing:
             log.info("%d document(s) were indexed with another embedding model; adding %s embeddings in the background",
                      len(missing), self.embedder.model_name)
@@ -158,9 +160,7 @@ class AppState:
             if isinstance(changes.get("style"), dict):
                 current["style"] = clean_style({**current["style"], **changes["style"]})
             config.SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            tmp = config.SETTINGS_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(current, indent=1), encoding="utf-8")
-            tmp.replace(config.SETTINGS_FILE)
+            write_json(config.SETTINGS_FILE, current)  # retries the swap while Windows has the file open
             log.info("Settings saved: voice=%s, tutor %s", current["voice"],
                      ", ".join(f"{k}={v}" for k, v in current["style"].items()))
             return current

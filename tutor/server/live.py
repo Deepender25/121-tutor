@@ -1,11 +1,12 @@
 """WebSocket bridge: browser <-> VoiceSession (Gemini Live), with tools running locally.
 
 Browser -> server: binary frames = 16 kHz mono PCM16 mic audio;
-                   JSON {"type": "text", "text"} | {"type": "audio_end"} | {"type": "close"} |
-                        {"type": "client_stats", ...} (playback diagnostics, logged)
+                   JSON {"type": "text", "text", "display"?} (display: a short version for the history) |
+                        {"type": "audio_end"} | {"type": "close"} |
+                        {"type": "client_stats", ...} (playback diagnostics, logged to the file)
 Server -> browser: binary frames = 24 kHz mono PCM16 speech;
                    JSON {"type": "status"|"transcript"|"interrupted"|"turn_complete"|"tool_call"|
-                         "tool_result"|"error", ...}
+                         "tool_result"|"notice"|"error", ...}
 """
 
 import asyncio
@@ -29,9 +30,13 @@ from tutor.voice.prompt import build_system_prompt
 log = logging.getLogger("live")
 
 
-WEB_NUDGE = ("(Message from the app, not the person: they asked you to search the internet, but you answered "
-             "without calling web_search. Call web_search now with a good query, then answer from those results "
-             "and name the websites. Don't apologise at length; just say you're searching now.)")
+WEB_NUDGE = ("(Message from the app, not the person: their last message asked you to search the internet, and you "
+             "answered without calling web_search. Call web_search now with a good query, then answer from those "
+             "results and name the websites. If they actually told you not to search, just say \"Okay\" and wait. "
+             "Don't apologise at length; just say you're searching now.)")
+SEARCH_LOADING = "Getting search ready. The first start takes about half a minute; the voice starts by itself."
+NO_KEY = ("No Gemini API key. Add GEMINI_API_KEY=… to the .env file in the project folder, then close the "
+          "\"Voice Tutor - API\" window and run run.bat again.")
 
 
 def join_text(previous: str, piece: str) -> str:
@@ -73,12 +78,21 @@ class TurnRecorder:
     def __init__(self, state: AppState, notebook_id: str):
         self.state, self.notebook_id = state, notebook_id
         self.user, self.model, self.refs = "", "", []
+        self.pending = ""  # typed during a reply: it starts the next exchange once that reply ends
         self.turns = 0
 
     def user_text(self, text: str) -> None:
         if self.model:  # user barged in after the model spoke: close the previous exchange
             self.flush()
         self.user += text
+
+    def typed(self, text: str) -> None:
+        """A typed message. During a reply, Gemini keeps sending that reply's transcript until it reports
+        'interrupted', so the message waits and is paired with the answer that follows it."""
+        if self.model.strip():
+            self.pending += text
+        else:
+            self.user_text(text)
 
     def model_text(self, text: str) -> None:
         self.model = join_text(self.model, text)
@@ -102,7 +116,13 @@ class TurnRecorder:
                 log.info("%s %s", "You:  " if e["role"] == "user" else "Tutor:", short(e["text"], 220))
             with contextlib.suppress(KeyError):  # notebook deleted mid-session
                 self.state.notebooks.append_history(self.notebook_id, entries)
-        self.user, self.model, self.refs = "", "", []
+        self.user, self.pending = self.pending, ""
+        self.model, self.refs = "", []
+
+    def finish(self) -> None:
+        """Save everything at the end of a session, including a message typed during the last reply."""
+        self.flush()
+        self.flush()
 
 
 class AudioTape:
@@ -157,6 +177,56 @@ class AudioTape:
                 f.close()
 
 
+def typed_message(data: dict) -> tuple[str, str] | None:
+    """(text for Gemini, text for the history) from a {"type": "text", "text", "display"?} frame, or None.
+    `display` is a short version for the chat, e.g. an outline tap's 'Teach me "Design"'."""
+    text = (data.get("text") or "").strip()[:4000] if isinstance(data.get("text"), str) else ""
+    if data.get("type") != "text" or not text:
+        return None
+    display = data.get("display")
+    display = display.strip()[:400] if isinstance(display, str) else ""
+    return text, display or text
+
+
+async def wait_for_search(ws: WebSocket, state: AppState) -> list[tuple[str, str]] | None:
+    """Wait for the search model (it loads for about half a minute after the app starts), telling the page
+    why, and keeping any messages typed meanwhile. Returns those messages, or None if the page left: the
+    caller then ends at once, so an abandoned attempt doesn't hold one of the voice-session slots."""
+    early: list[tuple[str, str]] = []
+    if state.embedder_ready.is_set():
+        return early
+    await ws.send_text(json.dumps({"type": "notice", "text": SEARCH_LOADING}, ensure_ascii=False))
+    log.info("Voice session waiting for the search model to load")
+    wait = asyncio.create_task(asyncio.to_thread(state.require_embedder))
+    # The thread can't be stopped, and if the page leaves first nobody reads its outcome: retrieve it here to
+    # keep "Task exception was never retrieved" out of the log. The caller asks require_embedder again.
+    wait.add_done_callback(lambda t: t.cancelled() or t.exception())
+    while not wait.done():
+        recv = asyncio.create_task(ws.receive())
+        await asyncio.wait({wait, recv}, return_when=asyncio.FIRST_COMPLETED)
+        if not recv.done():
+            recv.cancel()
+            with contextlib.suppress(BaseException):
+                await recv
+            break
+        try:
+            msg = recv.result()
+        except Exception:  # the connection failed outright
+            log.info("The page left while search was loading")
+            return None
+        data = None
+        if msg["type"] != "websocket.disconnect" and msg.get("text"):
+            with contextlib.suppress(ValueError):
+                data = json.loads(msg["text"])
+        if msg["type"] == "websocket.disconnect" or (isinstance(data, dict) and data.get("type") == "close"):
+            log.info("The page left while search was loading")
+            return None
+        typed = typed_message(data) if isinstance(data, dict) else None
+        if typed:
+            early.append(typed)  # mic audio (bytes) and other messages are dropped: the voice isn't on yet
+    return early
+
+
 async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> None:
     await ws.accept()
     outgoing: asyncio.Queue = asyncio.Queue(maxsize=2000)
@@ -181,10 +251,14 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
     except KeyError:
         return await fail("This notebook no longer exists.")
     if not state.has_gemini_key():
-        return await fail("No Gemini API key. Add GEMINI_API_KEY to the .env file in the project folder and "
-                          "restart the app.")
+        return await fail(NO_KEY)
+    early_texts = await wait_for_search(ws, state)
+    if early_texts is None:  # the page left while search was loading
+        with contextlib.suppress(Exception):
+            await ws.close()
+        return
     try:
-        embedder = await asyncio.to_thread(state.require_embedder)
+        embedder = state.require_embedder(timeout=0)  # ready (or failed) by now
     except RuntimeError as e:
         return await fail(str(e))
 
@@ -207,6 +281,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
             state.notebooks.update(notebook_id, active_source=doc_id)
 
     tools = NotebookTools(state.cache, embedder, notebook.sources, notebook.active_source, on_active_change)
+    background: set[asyncio.Task] = set()  # fire-and-forget tasks, referenced until they finish
 
     async def emit(event: VoiceEvent) -> None:
         if event.kind == "audio":
@@ -235,6 +310,8 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
         elif event.kind == "interrupted":
             interruptions[0] += 1
             log.info("Reply interrupted (Gemini heard speech)")
+            if recorder.pending:  # the old reply is over: what was typed during it starts the next exchange
+                recorder.flush()
         elif event.kind == "tool_call":
             guard.tool_called(event.data.get("name", ""))
         elif event.kind == "tool_result":
@@ -245,7 +322,9 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
             if guard.needs_nudge():
                 # Safety net: the person asked for an internet search and the model answered without one.
                 log.warning("Tutor answered an internet-search request without searching; asking it to search now")
-                asyncio.create_task(session.send_text(WEB_NUDGE))
+                nudge = asyncio.create_task(session.send_text(WEB_NUDGE))
+                background.add(nudge)
+                nudge.add_done_callback(background.discard)
         elif event.kind == "error":
             log.warning("Voice error: %s", event.data.get("message"))
         elif event.kind == "status" and event.data.get("state") in ("reconnecting", "closed"):
@@ -274,12 +353,14 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
         return outcome.result, outcome.ui
 
     def build_prompt() -> str:
-        return build_system_prompt(state.notebooks.get(notebook_id), state.cache, state.settings()["style"])
+        # Rebuilt on every reconnect (fresh reading position and history), but with the manner chosen when the
+        # conversation started: Settings changes apply from the next conversation, like the voice.
+        return build_system_prompt(state.notebooks.get(notebook_id), state.cache, style)
 
     session = GeminiLiveSession(
         api_key=config.gemini_api_key(),
         model=config.LIVE_MODEL,
-        voice=state.settings()["voice"],
+        voice=voice,
         build_prompt=build_prompt,
         run_tool=run_tool,
         emit=emit,
@@ -287,6 +368,48 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
     )
     send_task = asyncio.create_task(sender())
     run_task = asyncio.create_task(session.run())
+
+    async def send_typed(text: str, display: str) -> None:
+        recorder.typed(display)
+        guard.user_input(text)
+        timing["input_at"] = time.perf_counter()
+        await session.send_text(text)  # queued by the session until it's connected
+
+    for text, display in early_texts:
+        await send_typed(text, display)
+
+    async def handle(msg: dict) -> bool:
+        """One message from the browser. Returns False when the page ended the session."""
+        if msg.get("bytes") is not None:
+            if tape:
+                tape.mic(msg["bytes"])
+            await session.send_audio(msg["bytes"])
+            return True
+        try:
+            data = json.loads(msg.get("text") or "{}")
+        except ValueError:
+            log.debug("Skipped a message from the browser that isn't JSON: %s", short(msg.get("text") or "", 120))
+            return True
+        if not isinstance(data, dict):
+            log.debug("Skipped a message from the browser that isn't an object")
+            return True
+        kind = data.get("type")
+        if kind == "text":
+            typed = typed_message(data)
+            if typed:
+                await send_typed(*typed)
+        elif kind == "audio_end":
+            await session.end_audio()
+        elif kind == "client_stats":
+            stats = {k: v for k, v in data.items() if k != "type"}
+            # Debug level: in the log file, not on the API window's console.
+            log.debug("Playback in the browser: %s", short(json.dumps(stats, ensure_ascii=False), 1500))
+            if tape:
+                tape.note(f"client_stats {json.dumps(stats, ensure_ascii=False)}")
+        elif kind == "close":
+            log.info("The page ended the session")
+            return False
+        return True
 
     async def reader() -> None:
         while True:
@@ -298,39 +421,24 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
                 if tape:
                     tape.note(f"browser connection closed (code {msg.get('code')})")
                 return
-            if msg.get("bytes") is not None:
-                if tape:
-                    tape.mic(msg["bytes"])
-                await session.send_audio(msg["bytes"])
-                continue
-            data = json.loads(msg.get("text") or "{}")
-            kind = data.get("type")
-            if kind == "text" and data.get("text", "").strip():
-                text = data["text"].strip()[:4000]
-                recorder.user_text(text)
-                guard.user_input(text)
-                timing["input_at"] = time.perf_counter()
-                await session.send_text(text)
-            elif kind == "audio_end":
-                await session.end_audio()
-            elif kind == "client_stats":
-                stats = {k: v for k, v in data.items() if k != "type"}
-                log.info("Playback in the browser: %s", short(json.dumps(stats, ensure_ascii=False), 1500))
-                if tape:
-                    tape.note(f"client_stats {json.dumps(stats, ensure_ascii=False)}")
-            elif kind == "close":
-                log.info("The page ended the session")
-                return
+            try:
+                if not await handle(msg):
+                    return
+            except Exception:  # one bad message must not end the conversation
+                log.exception("Couldn't handle a message from the browser")
 
     read_task = asyncio.create_task(reader())
     try:
         # Ends when the browser leaves, or the session ends (idle timeout / fatal error).
-        await asyncio.wait({read_task, run_task}, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait({read_task, run_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            if not task.cancelled() and task.exception() is not None:
+                log.error("The voice session stopped because of an error", exc_info=task.exception())
     except WebSocketDisconnect:
         pass
     finally:
         await session.close()
-        recorder.flush()
+        recorder.finish()
         if tape:
             tape.note("session ended")
             tape.close()

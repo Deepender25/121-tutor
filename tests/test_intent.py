@@ -15,6 +15,8 @@ SEARCH_REQUESTS = [
     "internet pe dekho ki latest kya hai",
     "इंटरनेट पर देखो",
     "look this up online",
+    "search it on the net",
+    "net pe dekho",
 ]
 
 NOT_SEARCH = [
@@ -24,6 +26,24 @@ NOT_SEARCH = [
     "So, what is the first topic?",
     "Can you explain it better?",
     "Find the definition of cognitive computing in my notes.",
+    # "net" as a word in the material, not the internet
+    "look at the net force on the block",
+    "find the net income for 2023",
+    "check the net profit",
+    "check the neural net diagram",
+    "neural net ko check karo",
+    "the net result is zero, check my reasoning",
+    # topics that contain a place word, next to an unrelated verb
+    "explain online learning and find examples",
+    "batao online banking kaise kaam karta hai",
+    "Google Docs integration check",
+    "what does the internet layer do, look at section 2",
+    "इंटरनेट क्या है समझाओ",
+    "web search wala part samjhao",
+    # asked not to search
+    "don't search online, just use my notes",
+    "no need to google it",
+    "internet pe mat dekho, notes se batao",
 ]
 
 

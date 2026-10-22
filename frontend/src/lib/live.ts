@@ -27,6 +27,9 @@ interface Handlers {
   onState?: (state: LiveState) => void;
   onLevel?: (level: number) => void;
   onError?: (message: string, fatal: boolean) => void;
+  // The session ended: "user" (end() was called), "server" (it closed the session: idle, a fatal error),
+  // "dropped" (the connection was lost unexpectedly; onError has already explained it). Fires once per session.
+  onClosed?: (reason: "user" | "server" | "dropped") => void;
 }
 
 export class LiveClient {
@@ -47,7 +50,10 @@ export class LiveClient {
   private bus: GainNode | null = null; // the current reply's audio, faded out (not cut) when interrupted
   private carry: Uint8Array | null = null; // odd trailing byte of a chunk: the next chunk's first sample half
   private nextTime = 0;
-  private pendingText: string[] = [];
+  private pendingText: { text: string; display?: string }[] = [];
+  private micSetup: Promise<boolean> | null = null; // getUserMedia in flight: later calls wait for the same one
+  private userEnded = false; // end() was called
+  private serverEnded = false; // the server said the session is over (closed, idle, or a fatal error)
   private raf: number | null = null;
   private inReply = false; // reply audio is flowing (a gap now is audio arriving late, not a pause)
   private diag = new PlaybackDiagnostics();
@@ -79,6 +85,8 @@ export class LiveClient {
       return;
     }
     this.setState("connecting");
+    this.userEnded = false;
+    this.serverEnded = false;
     try {
       const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctx();
@@ -108,7 +116,7 @@ export class LiveClient {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onopen = () => {
-      for (const text of this.pendingText.splice(0)) ws.send(JSON.stringify({ type: "text", text }));
+      for (const item of this.pendingText.splice(0)) ws.send(JSON.stringify({ type: "text", ...item }));
       this.diag.onReport = (stats) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "client_stats", ...stats })); };
     };
     ws.onmessage = (e) => {
@@ -116,6 +124,7 @@ export class LiveClient {
       let msg: LiveMessage;
       try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === "status") {
+        if (msg.state === "closed" || msg.state === "idle") this.serverEnded = true;
         if (msg.state === "ready") this.setState("ready");
         else if (msg.state === "reconnecting" || msg.state === "connecting") this.setState(msg.state);
         else if (msg.state === "idle") this.h.onMessage?.({ type: "notice", text: "Voice session paused after a few quiet minutes. Tap the orb to continue." });
@@ -124,12 +133,21 @@ export class LiveClient {
       } else if (msg.type === "turn_complete" || msg.type === "tool_call") {
         this.inReply = false; // the next audio starts a new stretch: a pause before it is expected
       } else if (msg.type === "error") {
+        if (msg.fatal) this.serverEnded = true;
         this.h.onError?.(msg.message, !!msg.fatal);
       }
       this.h.onMessage?.(msg);
     };
     ws.onclose = () => {
-      if (this.ws === ws) this.teardown();
+      if (this.ws !== ws) return; // end() already tore down, or a newer socket replaced this one
+      const live = this.state === "ready" || this.state === "reconnecting";
+      if (live && !this.userEnded && !this.serverEnded) {
+        // The API server restarted or the network dropped, with no word from the server.
+        this.h.onError?.("The voice connection closed. Tap the orb to continue.", true);
+        this.teardown("dropped");
+      } else {
+        this.teardown("server");
+      }
     };
     ws.onerror = () => {
       if (this.state === "connecting") this.h.onError?.("Couldn't connect to the voice server.", true);
@@ -137,6 +155,7 @@ export class LiveClient {
   }
 
   end() {
+    this.userEnded = true;
     this.diag.report(true);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try { this.ws.send(JSON.stringify({ type: "close" })); } catch { /* closing anyway */ }
@@ -144,10 +163,11 @@ export class LiveClient {
     const ws = this.ws;
     this.ws = null;
     try { ws?.close(); } catch { /* ignore */ }
-    this.teardown();
+    this.teardown("user");
   }
 
-  private teardown() {
+  private teardown(reason: "user" | "server" | "dropped") {
+    const wasActive = this.active;
     this.disableMic(true);
     this.flushAudio();
     if (this.raf !== null) cancelAnimationFrame(this.raf);
@@ -158,6 +178,7 @@ export class LiveClient {
     this.pendingText = [];
     this.setState("idle");
     this.h.onLevel?.(0);
+    if (wasActive) this.h.onClosed?.(reason);
   }
 
   private setState(state: LiveState) {
@@ -173,33 +194,57 @@ export class LiveClient {
 
   // ---- microphone -------------------------------------------------------------------
 
-  async enableMic(): Promise<boolean> {
-    if (this.micOn) return true;
+  // A second call while the permission prompt is open (the orb tapped again, or "M") waits for the first one,
+  // so there is only ever one microphone stream and one recorder.
+  enableMic(): Promise<boolean> {
+    if (this.micOn) return Promise.resolve(true);
+    if (this.micSetup) return this.micSetup;
+    this.micSetup = this.setupMic().finally(() => { this.micSetup = null; });
+    return this.micSetup;
+  }
+
+  // The session ended (End, or the connection closed) while we were waiting on the browser.
+  private get gone() {
+    return !this.ctx || this.state === "idle";
+  }
+
+  private async setupMic(): Promise<boolean> {
     if (!navigator.mediaDevices?.getUserMedia) {
-      this.h.onError?.("Microphone isn't available here. Open the app at http://127.0.0.1 in Chrome or Edge.", false);
+      this.h.onError?.(`Microphone isn't available here. Open the app at http://127.0.0.1:${location.port || "8765"} in Chrome or Edge.`, false);
       return false;
     }
+    let obtained: MediaStream | null = null; // stopped again unless it becomes this.stream
+    const release = () => {
+      if (obtained && obtained !== this.stream) obtained.getTracks().forEach((t) => t.stop());
+      return false;
+    };
     try {
       if (!this.stream) {
         if (!this.ctx) return false;
-        this.stream = await navigator.mediaDevices.getUserMedia({
+        const stream = await navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         });
-        await this.ctx.audioWorklet.addModule(WORKLET_URL);
-        this.micSource = this.ctx.createMediaStreamSource(this.stream);
-        this.recorder = new AudioWorkletNode(this.ctx, "recorder-processor");
+        obtained = stream;
+        let ctx = this.ctx as AudioContext | null; // re-read: End may have closed it during the prompt
+        if (!ctx || this.gone) return release();
+        await ctx.audioWorklet.addModule(WORKLET_URL);
+        ctx = this.ctx as AudioContext | null;
+        if (!ctx || this.gone) return release();
+        this.stream = stream;
+        this.micSource = ctx.createMediaStreamSource(stream);
+        this.recorder = new AudioWorkletNode(ctx, "recorder-processor");
         this.recorder.port.onmessage = (e) => {
           if (e.data.type === "level") this.micLevel = e.data.value;
           else if (e.data.type === "audio" && this.micOn && this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(e.data.buffer);
           }
         };
-        this.diag.mic(this.stream);
+        this.diag.mic(stream);
         this.micSource.connect(this.recorder);
         // The worklet must be pulled by the graph to run; route it through a muted gain.
-        const sink = this.ctx.createGain();
+        const sink = ctx.createGain();
         sink.gain.value = 0;
-        this.recorder.connect(sink).connect(this.ctx.destination);
+        this.recorder.connect(sink).connect(ctx.destination);
       }
       this.stream.getAudioTracks().forEach((t) => (t.enabled = true));
       this.recorder?.port.postMessage({ type: "enable", value: true });
@@ -207,11 +252,19 @@ export class LiveClient {
       this.h.onState?.(this.state);
       return true;
     } catch (e) {
+      release();
       const name = (e as Error)?.name;
-      const blocked = name === "NotAllowedError" || name === "SecurityError";
-      this.h.onError?.(blocked
-        ? "Microphone access was blocked. Allow it in the address bar (lock icon), then try again."
-        : "No microphone found. Plug one in or type your message instead.", false);
+      if (this.gone) {
+        // End was pressed during the permission prompt (the closed context makes the setup fail): nothing to report
+      } else if (name === "NotAllowedError" || name === "SecurityError") {
+        this.h.onError?.("Microphone access was blocked. Allow it in the address bar (lock icon), then try again.", false);
+      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+        this.h.onError?.("No microphone found. Plug one in or type your message instead.", false);
+      } else if (name === "NotReadableError" || name === "AbortError") {
+        this.h.onError?.("Your microphone is being used by another app. Close it there, or type your message instead.", false);
+      } else {
+        this.h.onError?.("Couldn't start the microphone. Try again, or type your message instead.", false);
+      }
       return false;
     }
   }
@@ -242,10 +295,13 @@ export class LiveClient {
 
   // ---- text -------------------------------------------------------------------------
 
-  async sendText(text: string) {
+  // `display` is a short version for the chat history (an outline tap shows 'Teach me "Design"'); Gemini
+  // gets the full `text`.
+  async sendText(text: string, display?: string) {
     if (!this.active) await this.start({ mic: false });
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: "text", text }));
-    else this.pendingText.push(text);
+    const item = display === undefined ? { text } : { text, display };
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: "text", ...item }));
+    else this.pendingText.push(item);
   }
 
   // ---- playback ---------------------------------------------------------------------

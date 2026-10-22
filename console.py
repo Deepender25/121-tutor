@@ -8,7 +8,8 @@ import sys
 import textwrap
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):  # not under pytest's output capture
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from tutor.library import DocumentCache, DocumentError, StaleIndexError, ingest, resolve_doc_id  # noqa: E402
 
@@ -16,7 +17,7 @@ HELP = """Commands:
   next | n            continue to the next part        back | b      previous part
   repeat | r          show the current part again      start         go to the beginning
   go <target>         jump: "go chapter 3", "go 3.1", "go page 12", "go s004"
-  ask <question>      search the document              outline | o   sections + progress
+  ask <question>      search the document              outline | o   sections + position
   where | w           current position                 load <pdf>    switch document
   help | h            this list                        quit | q      exit
 Anything else you type is treated as a question (ask)."""
@@ -47,7 +48,7 @@ def show_passage(p: dict) -> None:
     if "error" in p:
         print(f"  ! {p['error']}")
         return
-    print(f"\n[{p['section']} · p.{p['pages']} · {p['position']} · {p['document_covered']} covered]\n")
+    print(f"\n[{p['section']} · p.{p['pages']} · {p['position']}]\n")
     for para in p["text"].split("\n\n"):
         print(textwrap.fill(para, width=100))
         print()
@@ -58,10 +59,9 @@ def show_passage(p: dict) -> None:
 
 
 def show_outline(o: dict) -> None:
-    print(f"\n{o['title']} — {o['pages']} pages — {o['document_covered']} covered")
+    print(f"\n{o['title']} — {o['pages']} pages")
     for s in o["sections"]:
-        mark = "x" if s["covered"] else " "
-        print(f"  [{mark}] {'   ' * (s['level'] - 1)}{s['title']}  (p.{s['pages']}, {s['id']})")
+        print(f"  {'   ' * (s['level'] - 1)}{s['title']}  (p.{s['pages']}, {s['id']})")
     show_where(o["position"])
 
 
