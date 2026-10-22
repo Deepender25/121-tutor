@@ -41,9 +41,9 @@ DECLARATIONS = [
             "teach: start, continue, repeat, go back, or jump to a section or page. Choosing a different source "
             "makes it the active one. When you jump to a section, the passages cover that whole section including "
             "its subsections: is_section_end becomes true once all of it has been read, and parts_left_in_section "
-            "says how many parts remain. To teach a whole section, keep calling with target 'next' until "
-            "is_section_end is true. Explain every point in the passage in your own words; don't read it out "
-            "verbatim unless asked."
+            "says how many parts remain. Teach one part at a time: after each call, explain every point in the "
+            "passage out loud in your own words (don't read it out verbatim unless asked), then call again with "
+            "target 'next' for the following part, until is_section_end is true."
         ),
         "parameters": {
             "type": "object",
@@ -222,6 +222,11 @@ class NotebookTools:
         passage = self.cache.get(doc_id).lesson.read(target or "next")
         self._set_active(doc_id)
         result = {"source": self._title(doc_id), "source_number": self._number(doc_id), **passage}
+        result["next_step"] = (
+            "Teach this part now: explain every point in it out loud, in your own words. Then "
+            + ("call read_passage with target next for the next part, without asking."
+               if not passage["is_section_end"] else
+               "that's the end of this section: ask them to explain it back or apply it."))
         first_page = int(passage["pages"].split("-")[0])
         ui = {"kind": "passage", "doc_id": doc_id, "page": first_page, "pages": passage["pages"],
               "section": passage["section"], "position": passage["position"],

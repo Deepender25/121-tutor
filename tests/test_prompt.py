@@ -55,7 +55,7 @@ def test_prompt_has_the_date_and_every_section():
     for heading in ("# Boundaries", "# Unclear audio", "# Reading position", "# Your manner"):
         assert heading in prompt
     assert "UNMISTAKABLY" in prompt and "Teach for exams" in prompt
-    assert "parts_left_in_section" in prompt  # the tool result field the teaching rule refers to
+    assert "is_section_end" in prompt and "one part at a time" in prompt  # read a part, teach it, then read on
 
 
 def test_the_tutor_rules_from_the_research_are_in_the_prompt():

@@ -852,3 +852,33 @@ its reply plays, and digital silence isn't the room). Each reply's log line now 
 quiet it started, and the room level ("Reply audio started 0.50s after your input (you went quiet 2.1s before; room
 -55 dBFS)"); and when someone talked, went quiet for 5 s and nothing came back (no reply, no tool call), a warning
 says so with the room level. A loud room means noise kept Gemini waiting; a quiet one points at the connection.
+
+## 36. Teaching a section: one part at a time, and no stopping halfway (2026-10-22)
+
+**What went wrong** (14:07, "So let's just start from the very beginning"): the tutor read five passages in 13 seconds
+(cover, syllabus, then the three parts of "What is Cognitive Computing?"), said only filler between them ("Continuing
+on, let's explore…"), never explained any of it, and asked a question about it. The rule then was "keep calling
+read_passage with target next until is_section_end", explaining as it reads only for sections of more than three
+parts (and on main: gather everything, then explain), so it collected and never taught.
+
+**Now:**
+- The prompt and the read_passage description say: read a part, teach every point in it out loud, then read the
+  next, without asking, until the section ends; a cover, contents or syllabus gets a sentence; "start from the
+  beginning" means the overview then the first topic, in the same turn; never end a turn announcing a step.
+- Each passage carries `next_step`: teach this part now, then read on (or, at the end of the section, ask them to
+  explain it back).
+- `TeachingGuard` (`tutor/server/live.py`), within one reply (anything the person says clears it):
+  - reading on before the part just read was taught (under 200 characters said since, for a part of 400+
+    characters) gets "teach the part you just read first" instead of the next part;
+  - jumping away from a section with parts still to come (it once went from the first part of a section to the
+    next section, skipping the analogy and the memory trick) gets "N more parts: read on and teach them";
+  - a turn that ends announcing a step it didn't take ("Let's dive right into the first topic.") or stops mid-section
+    without a question gets a nudge to carry on (like the web-search nudge);
+  - short parts and front matter (contents, syllabus, index…) aren't held; at most two holds in a row and four
+    nudges per thing they said, so it can't stall or loop.
+
+**Checked live** (typed, Gemini Live through the local server, a fresh session each): "start from the very beginning"
+eight times and "teach me the section on what is cognitive computing" three times. In every run after the fix the
+tutor taught the definitions, the calculator / medical intern analogy and the memory trick with their pages, then
+asked them to explain the difference in their own words; "Continue" went on to the three eras. Runs where the model
+still stopped mid-section or after announcing a step were picked up by the nudge and finished the section.

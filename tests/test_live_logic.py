@@ -451,3 +451,97 @@ def test_mic_meter_ignores_the_tutors_voice_and_slow_tools():
     assert m.spoke
     m.taken()  # a web search started: a long wait for the reply now isn't a stuck turn
     assert not m.stuck(t + 10)
+
+
+def test_teaching_guard_holds_back_reading_on_until_the_part_is_taught():
+    from tutor.server.live import TeachingGuard
+    g = TeachingGuard()
+    assert g.hold("read_passage", {"target": "start"}) is None
+    g.read({"section": "1. What is Cognitive Computing?", "pages": "3", "text": "x" * 1500})
+    g.model_output("Continuing on, let's explore how these systems operate and differ from previous generations.")
+    held = g.hold("read_passage", {"target": "next"})
+    assert held and "haven't taught" in held["not_read_yet"] and "page 3" in held["not_read_yet"]
+    assert g.hold("read_passage", {"target": "s007"}) is None  # a jump elsewhere isn't reading on
+    assert g.hold("search_sources", {"query": "x"}) is None
+    g.model_output("Cognition means the mental processes of knowing: perceiving, learning, reasoning and deciding. " * 3)
+    assert g.hold("read_passage", {"target": "next"}) is None
+
+
+def test_teaching_guard_lets_the_student_skip_and_never_stalls():
+    from tutor.server.live import TeachingGuard
+    g = TeachingGuard()
+    g.read({"section": "Cover", "pages": "1", "text": "COGNITIVE COMPUTING Unit 1"})  # a cover page: little to say
+    assert g.hold("read_passage", {}) is None
+    g.read({"section": "Long part", "pages": "4", "text": "x" * 2000})
+    g.user_input()  # "skip this, next"
+    assert g.hold("read_passage", {"target": "next"}) is None
+    g.read({"section": "Long part", "pages": "5", "text": "x" * 2000})
+    assert g.hold("read_passage", {"target": "next"}) and g.hold("read_passage", {"target": "next"})
+    assert g.hold("read_passage", {"target": "next"}) is None  # after two holds it goes ahead rather than stall
+
+
+def test_a_turn_that_ends_announcing_a_step_it_didnt_take_is_noticed():
+    from tutor.server.live import TeachingGuard, announces_next_step
+    assert announces_next_step("This unit covers the basics. Let's dive right into the first topic, which is defining "
+                               "what cognitive computing really is.")
+    assert announces_next_step("One moment. Let me read that section for you.")
+    for fine in ("Where would you like to start?", "Let me know if you'd like to continue.",
+                 "Whenever you're ready, let's continue.", "That's the end of the section. Well done!",
+                 "If you'd like, we'll look at the next part.", ""):
+        assert not announces_next_step(fine), fine
+    g = TeachingGuard()
+    g.model_output("Let's move to the next part.")
+    g.tool_called()  # it did take the step
+    g.model_output("The intern reads thousands of case files, the corpus, and proposes diagnoses with evidence.")
+    assert not g.needs_nudge()
+    g.model_output(" Now let's look at the three eras of computing.")
+    assert "ended your turn without doing it" in g.needs_nudge() and g.needs_nudge() is None  # once
+    g.user_input()
+    g.model_output("Let's begin with the history.")
+    assert g.needs_nudge()
+
+
+def test_a_turn_that_stops_in_the_middle_of_a_section_is_carried_on():
+    from tutor.server.live import TeachingGuard
+    g = TeachingGuard()
+    part = {"section": "1. What is Cognitive Computing?", "pages": "3", "text": "x" * 1500,
+            "is_section_end": False, "parts_left_in_section": 2}
+    g.read(part)
+    g.model_output("It is trained on data, learns patterns, builds a model and scores hypotheses with evidence. " * 3)
+    nudge = g.needs_nudge()
+    assert nudge and "2 parts" in nudge and "target next" in nudge and g.needs_nudge() is None
+    g.read({**part, "parts_left_in_section": 1})
+    g.model_output("The intern reads the corpus and proposes diagnoses. " * 5 + "Can you say why that's a hypothesis?")
+    assert g.needs_nudge() is None  # a question for them: their turn
+    g.read({**part, "is_section_end": True, "parts_left_in_section": 0})
+    g.model_output("Augmented intelligence, not artificial replacement. " * 5)
+    assert g.needs_nudge() is None  # the section is done
+
+
+def test_teaching_guard_keeps_it_from_skipping_the_rest_of_a_section_on_its_own():
+    from tutor.server.live import TeachingGuard
+    g = TeachingGuard()
+    part = {"section": "1. What is Cognitive Computing?", "pages": "3", "text": "x" * 1500,
+            "is_section_end": False, "parts_left_in_section": 2}
+    g.read(part)
+    g.model_output("Cognition means the mental processes of knowing: perceiving, learning, reasoning, deciding. " * 3)
+    held = g.hold("read_passage", {"target": "s008"})
+    assert held and "2 more parts" in held["not_read_yet"] and "target next" in held["not_read_yet"]
+    assert g.hold("read_passage", {"target": "previous"}) is None
+    g.user_input()  # "skip to the history part"
+    assert g.hold("read_passage", {"target": "s008"}) is None
+    g.read({**part, "is_section_end": True, "parts_left_in_section": 0})
+    g.model_output("x" * 300)
+    assert g.hold("read_passage", {"target": "s008"}) is None  # the section is done: moving on is fine
+    g.read({"section": "Cover", "pages": "1", "text": "COGNITIVE COMPUTING", "is_section_end": False,
+            "parts_left_in_section": 1})
+    assert g.hold("read_passage", {"target": "s005"}) is None  # past the cover to the first topic
+
+
+def test_front_matter_isnt_held_back():
+    from tutor.server.live import TeachingGuard
+    g = TeachingGuard()
+    g.read({"section": "COGNITIVE COMPUTING › Contents", "pages": "2", "text": "1. What is Cognitive Computing? 3\n" * 40,
+            "is_section_end": False, "parts_left_in_section": 1})
+    g.model_output("The contents list the course's two parts.")
+    assert g.hold("read_passage", {"target": "next"}) is None and g.hold("read_passage", {"target": "s005"}) is None

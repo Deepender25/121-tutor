@@ -10,6 +10,7 @@ Server -> browser: binary frames = 24 kHz mono PCM16 speech;
 """
 
 import asyncio
+import re
 import contextlib
 import json
 import logging
@@ -36,6 +37,11 @@ WEB_NUDGE = ("(Message from the app, not the person: their last message asked yo
              "answered without calling web_search. Call web_search now with a good query, then answer from those "
              "results and name the websites. If they actually told you not to search, just say \"Okay\" and wait. "
              "Don't apologise at length; just say you're searching now.)")
+CONTINUE_NUDGE = ("(Message from the app, not the person: you said what you'd do next but ended your turn without "
+                  "doing it. Do it now: call the tool and teach, without repeating what you already said.)")
+FINISH_SECTION_NUDGE = ("(Message from the app, not the person: you stopped in the middle of a section; {left} of it "
+                        "still to come, and they didn't ask you to stop. Carry on: call read_passage with target next "
+                        "and teach it, without repeating what you already said.)")
 SEARCH_LOADING = "Getting search ready. The first start takes about half a minute; the voice starts by itself."
 NO_KEY = ("No Gemini API key. Add GEMINI_API_KEY=… to the .env file in the project folder, then close the "
           "\"Voice Tutor - API\" window and run run.bat again.")
@@ -116,6 +122,112 @@ class MicMeter:
                 if self.spoke and quiet is not None and self.floor is not None else "")
         self.spoke = False
         return note
+
+
+_NEXT_STEP = re.compile(
+    r"\b(?:let'?s|let us|let me|i'?ll|i will|we'?ll|we will)\b(?!\s+know)[^.?!]*?\b(?:dive|start|begin|move|go|look|"
+    r"turn|jump|read|open|continue|explore|get into|head|check|find|search)\b[^.?!]*[.!]?\s*$", re.I)
+_WAITING = re.compile(r"\b(?:when(?:ever)? you'?re ready|if you(?:'d)? (?:like|want)|whenever you want|shall we|"
+                      r"would you like|do you want)\b", re.I)
+
+
+# Parts with nothing to teach line by line: a sentence on what they list is enough.
+_FRONT_MATTER = re.compile(r"\b(?:contents|syllabus|index|preface|foreword|how to use|legend|acknowledg\w*)\b", re.I)
+
+
+def announces_next_step(text: str) -> bool:
+    """Does what was said end with a sentence announcing a step ("Let's dive into the first topic.", "Let me read that
+    section.") rather than a question or an offer that waits for them?"""
+    text = " ".join(text.split())
+    if not text or text.endswith("?"):
+        return False
+    last = re.split(r"(?<=[.!?])\s+", text)[-1]
+    return bool(_NEXT_STEP.search(last)) and not _WAITING.search(last)
+
+
+class TeachingGuard:
+    """Holds back reading the next part while the part just read hasn't been taught. Once the tutor read five parts in
+    a row saying only "let's continue" between them, then asked a question about what it never explained."""
+
+    MIN_CHARS = 200  # spoken since the read; a filler line ("Continuing on, let's look at…") is under 100
+    MAX_HOLDS = 2  # after this many in a row, let it through rather than stall the lesson
+    MAX_NUDGES = 4  # per thing they said: a section's worth of parts, not an endless loop
+    SHORT_PART = 400  # a cover page or a heading on its own: nothing much to teach
+
+    def __init__(self):
+        self.pending: dict | None = None  # the part read and not yet taught
+        self.spoken = 0
+        self.holds = 0
+        self.since_tool = ""  # said since the last tool call
+        self.nudged = False  # since the last part read (or the last thing they said)
+        self.nudges = 0  # since the last thing they said
+
+    def user_input(self) -> None:
+        """They said something: "skip", "next" and the like are theirs to decide."""
+        self.pending, self.holds = None, 0
+        self.nudged, self.nudges = False, 0
+
+    def model_output(self, text: str) -> None:
+        self.spoken += len(text.strip())
+        self.since_tool += text
+
+    def tool_called(self) -> None:
+        self.since_tool = ""
+
+    def needs_nudge(self) -> str | None:
+        """At the end of a turn, the message that gets the lesson going again, or None. The tutor once ended a turn
+        with "Let's dive right into the first topic." and then silence; and once stopped after the first part of a
+        section, with two parts to go, without a word."""
+        if self.nudged or self.nudges >= self.MAX_NUDGES:
+            return None
+        text = " ".join(self.since_tool.split())
+        if announces_next_step(text):
+            message = CONTINUE_NUDGE
+        elif (self.pending and self.pending["parts_left"] and self.spoken >= self.pending["needed"]
+              and not text.endswith("?")):
+            left = self.pending["parts_left"]
+            message = FINISH_SECTION_NUDGE.format(left=f"{left} part{'s' if left != 1 else ''}")
+        else:
+            return None
+        self.nudged = True
+        self.nudges += 1
+        return message
+
+    def read(self, result: dict) -> None:
+        text = result.get("text", "")
+        short = len(text) < self.SHORT_PART or bool(_FRONT_MATTER.search(result.get("section", "")))
+        self.pending = {"section": result.get("section", ""), "pages": result.get("pages", ""),
+                        "needed": 0 if short else min(self.MIN_CHARS, len(text) // 5), "short": short,
+                        "parts_left": 0 if result.get("is_section_end") else int(result.get("parts_left_in_section") or 0)}
+        self.spoken = 0
+        self.holds = 0
+        self.nudged = False
+
+    def hold(self, name: str, args: dict | None) -> dict | None:
+        """The result to send instead of reading on, or None to go ahead. Only within one reply: anything they say
+        in between (skip, go to chapter 3) clears it."""
+        if name != "read_passage" or self.pending is None or self.holds >= self.MAX_HOLDS:
+            self.holds = 0
+            return None
+        target = str((args or {}).get("target") or "next").strip().lower()
+        p = self.pending
+        if target in ("next", "continue"):
+            if self.spoken >= p["needed"]:
+                return None
+            self.holds += 1
+            return {"not_read_yet": (
+                f"You haven't taught the part you just read yet ({p['section']}, page {p['pages']}). Explain every "
+                f"point in it out loud now, in your own words; then call read_passage with target next for the "
+                f"following part.")}
+        if target in ("current", "again", "repeat", "previous", "prev", "back") or p["short"] or not p["parts_left"]:
+            return None
+        # Jumping away mid-section on its own skips parts nobody asked to skip (it once went from a section's first
+        # part straight to the next section, leaving out the analogy and the memory trick).
+        self.holds += 1
+        return {"not_read_yet": (
+            f"{p['section']} has {p['parts_left']} more part{'s' if p['parts_left'] != 1 else ''} after this one, "
+            f"and they haven't asked to skip it. Call read_passage with target next and teach "
+            f"{'them' if p['parts_left'] != 1 else 'it'} first.")}
 
 
 class WebSearchGuard:
@@ -335,6 +447,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
 
     recorder = TurnRecorder(state, notebook_id)
     guard = WebSearchGuard()
+    teaching = TeachingGuard()
     started = time.perf_counter()
     voice = state.settings()["voice"]
     style = state.settings()["style"]
@@ -379,9 +492,11 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
             if event.data["role"] == "user":
                 recorder.user_text(event.data["text"])
                 guard.user_input(event.data["text"])
+                teaching.user_input()
                 timing["input_at"] = time.perf_counter()
             else:
                 recorder.model_text(event.data["text"])
+                teaching.model_output(event.data["text"])
                 guard.model_output()
         elif event.kind == "interrupted":
             interruptions[0] += 1
@@ -391,6 +506,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
                 recorder.flush()
         elif event.kind == "tool_call":
             guard.tool_called(event.data.get("name", ""))
+            teaching.tool_called()
             meter.taken()
         elif event.kind == "tool_result":
             recorder.ref(event.data.get("ui"))
@@ -401,6 +517,13 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
                 # Safety net: the person asked for an internet search and the model answered without one.
                 log.warning("Tutor answered an internet-search request without searching; asking it to search now")
                 nudge = asyncio.create_task(session.send_text(WEB_NUDGE))
+                background.add(nudge)
+                nudge.add_done_callback(background.discard)
+            elif carry_on := teaching.needs_nudge():
+                # Safety net: the turn ended announcing a step it didn't take, or in the middle of a section.
+                log.warning("Tutor stopped mid-lesson (%s); asking it to carry on",
+                            "announced a step without taking it" if carry_on == CONTINUE_NUDGE else "mid-section")
+                nudge = asyncio.create_task(session.send_text(carry_on))
                 background.add(nudge)
                 nudge.add_done_callback(background.discard)
         elif event.kind == "error":
@@ -418,7 +541,14 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
             elif tools.active not in tools.doc_ids:
                 tools.active = tools.doc_ids[0] if tools.doc_ids else None
         t0 = time.perf_counter()
+        held = teaching.hold(name, args)
+        if held is not None:
+            log.info("Held back %s(%s): the part just read hasn't been taught yet", name,
+                     short(json.dumps(args, ensure_ascii=False), 120))
+            return held, None
         outcome = await asyncio.to_thread(tools.call, name, args)
+        if name == "read_passage" and "error" not in outcome.result:
+            teaching.read(outcome.result)
         ms = (time.perf_counter() - t0) * 1000
         result = outcome.result
         if "error" in result:
@@ -450,6 +580,7 @@ async def live_endpoint(ws: WebSocket, notebook_id: str, state: AppState) -> Non
     async def send_typed(text: str, display: str) -> None:
         recorder.typed(display)
         guard.user_input(text)
+        teaching.user_input()
         timing["input_at"] = time.perf_counter()
         await session.send_text(text)  # queued by the session until it's connected
 

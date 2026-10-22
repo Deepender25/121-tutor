@@ -106,3 +106,11 @@ def test_open_source_rejects_a_page_that_isnt_there(healthy):
     tools = tools_for(healthy, "good")
     out = tools.call("open_source", {"page": 99})
     assert "pages 1 to 3" in out.result["error"] and out.ui["kind"] == "error"
+
+
+def test_each_passage_says_to_teach_it_before_reading_on(healthy):
+    tools = tools_for(healthy, "good")
+    first = tools.call("read_passage", {"target": "start"}).result
+    assert first["next_step"].startswith("Teach this part now") and "target next" in first["next_step"]
+    last = tools.call("read_passage", {"target": "page:3"}).result
+    assert last["is_section_end"] and "explain it back" in last["next_step"]
