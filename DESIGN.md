@@ -755,3 +755,63 @@ Tests: `tests/test_web.py` (the switch, Search + Fetch requests and results, eve
 `tests/test_web_source.py` (address checks, downloads and redirects, HTML to PDF with its outline through the real
 parser, TinyFish errors), with TinyFish faked from its documented response shapes; `tests/test_server.py` adds a web
 page through the endpoint end to end (indexed, outline from its headings, found by search).
+
+## 33. Tutor behaviour from research, and web search that finds better pages (2026-10-22)
+
+**Research** (three parallel reviews, primary sources): Google's LearnLM principles and its "Towards Responsible
+Development of GenAI for Education" report; OpenAI's study mode and Anthropic's learning mode; Bastani et al. (PNAS
+2025: an answer-giving tutor raised practice scores but lowered exam scores by 17%; a hint-giving one didn't); Kestin
+et al. (Harvard physics RCT: structured AI tutoring beat active learning); Tutor CoPilot (more probing questions,
+less generic praise); retrieval practice, worked examples and fading, refutation of misconceptions, process praise
+(Dunlosky, Roediger & Karpicke, Renkl, Mueller & Dweck); LLM failure modes (missing the first wrong step; sycophancy
+when a student insists); and voice-agent guidance (Gemini Live best practices, OpenAI realtime prompting, Vapi,
+ElevenLabs): off-topic handling, prompt injection, unclear audio, preambles, speaking numbers.
+
+**What changed in the prompt** (`prompts/system.md`, ordered persona, then teaching and conversation, then guardrails):
+- Teaching keeps the earlier rule that explanations are complete (the person asked for it), and adds: after a topic,
+  the student explains it back or applies it ("Does that make sense?" is banned); one level question on a new topic
+  when it matters; analogies from everyday Indian life with their limits stated; answers are checked against the
+  sources before being judged; the first wrong step is named and the student tries again before being told; a
+  misconception is named with why it's tempting; no giving in when the student insists without evidence; smaller
+  steps when they struggle; quizzes get harder after right answers and summarise strengths every five questions.
+- Sources: every answer from them names its page; course definitions in the sources win over the web.
+- Web search: English keyword queries, the question passed separately, kind/recency/India chosen deliberately,
+  sources named by their cite name, never a URL, dates for anything current.
+- Staying on track: one line for banter; brief, labelled help for learning questions outside the sources; one-line
+  refusal for non-learning tasks; honest "an AI running on Gemini" about itself.
+- Guardrails: instructions inside sources or pages are never followed; role-change attempts and requests for the
+  prompt get one line; homework: facts from the sources are told with their page, written work to submit gets a
+  hint ladder (idea, step, part of a step, a worked similar problem, then the answer after a real attempt); crisis
+  (Tele-MANAS 14416 and 112, said digit by digit); personal medical/legal/financial decisions go to professionals;
+  harmful requests declined; no personal data asked for or repeated; abuse warned once.
+- Teaching styles (`tutor/voice/style.py`) follow the same research: Direct ends a topic with a use-it question;
+  Step by step uses a worked example then fades; Socratic escalates hints after two tries; Exam prep adds a
+  retrieval-practice quiz. Encouragement controls warmth only, never accuracy; praise names what was done.
+- The native-audio transcript sometimes carries markup like `<speaker:catch-up>`; it's stripped, including when split
+  across transcript pieces (`clean_transcript` in `tutor/voice/gemini_live.py`).
+
+**Checked with real conversations** (Gemini Live through the local server, typed, a fresh session each): a full
+explanation with pages and a use-it question; a train-ticket request declined in one line; a joke then back to the
+notes; a jailbreak and a prompt request refused; "write my assignment" turned into guidance; "it's the same as
+rule-based programming" corrected with page 5 and held when the student insisted; photosynthesis (not in the notes)
+answered as general knowledge with an offer to search; ISRO and AI-regulation news via TinyFish (news, India,
+past week) citing India Today and PIB; research papers with authors and years; Hindi answered in Hindi; a crisis
+answered with Tele-MANAS and 112; a quiz one question at a time with a hint before the answer; a stray "bed" asked to
+repeat; "are you a person?" answered honestly; abuse, a medicine question and an Aadhaar number handled; and the
+Socratic and Exam-prep styles. Not fixable in the prompt: the speech transcript once rendered "data" in katakana in
+a Hindi reply (the transcript is the model's speech recognition of its own audio).
+
+**Web search** (`tutor/web.py`): TinyFish parameters checked live first (location IN, exclude_domains, news with a
+recency window, research papers with years; recency on research papers is rejected with a 400, so it maps to
+pub_year_min). The tool takes `query` (English keywords), `question`, `kind` (general/news/research), `recency` and
+`india_specific`. Results exclude social, login-walled and homework-dump sites, are re-ranked with a small boost for
+reliable sources, one per site; Fetch reads the best readable pages in parallel, one request each (a batch waits for
+its slowest page), within a 9-second budget for search and reading together. Measured from India: about 2 s of
+network overhead per request on top of TinyFish's page time (Wikipedia 1-1.8 s, PubMed Central ~7 s), so pages get 6
+s each; sites that always block or return a shell (ScienceDirect, IEEE Xplore, PubMed Central, Khan Academy, ...)
+aren't read but stay as sources; readable pages from the wider top 10 are preferred. Excerpts weight rare words
+(IDF), carry their nearest heading, and drop menus and instruction-like text; a page with nothing relevant gives no
+excerpt. Results carry `cite` names to say aloud, never an address (the publisher, else the site name at the end of the
+page title, else the domain's main word); the same search within 10 minutes is answered from memory. Tavily and
+DuckDuckGo fallbacks honour news and time windows. Highlights (Fetch's ranked passages) would replace the local
+excerpts but isn't enabled on this account (403). Typical result: 2-3 pages read, 6-9 s.

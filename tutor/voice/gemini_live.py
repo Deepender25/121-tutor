@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import functools
 import logging
+import re
 import time
 
 from google import genai
@@ -30,6 +31,22 @@ from tutor.voice.base import (
 )
 
 log = logging.getLogger("voice.gemini")
+
+# The native-audio model's speech transcript sometimes carries internal markup such as "<speaker:catch-up>" (seen
+# 2026-10-22), which would otherwise show up in the conversation. It can arrive split across transcript pieces.
+_MARKUP = re.compile(r"<[a-z_]+:[a-z0-9_-]*>", re.I)
+_MARKUP_START = re.compile(r"<[a-z_]*(?::[a-z0-9_-]*)?$", re.I)
+
+
+def clean_transcript(held: str, piece: str) -> tuple[str, str]:
+    """(text to show, text held back): markup removed; a piece ending in what may be the start of markup keeps that
+    end until the next piece completes or rules it out."""
+    text = held + piece
+    held = ""
+    m = _MARKUP_START.search(text)
+    if m and len(text) - m.start() <= 40:
+        text, held = text[:m.start()], text[m.start():]
+    return _MARKUP.sub("", text), held
 
 AUDIO_MIME = f"audio/pcm;rate={INPUT_SAMPLE_RATE}"
 MAX_RECONNECTS = 5
@@ -111,6 +128,7 @@ class GeminiLiveSession(VoiceSession):
         self._closing = asyncio.Event()
         self._ready = asyncio.Event()
         self._pending_text: list[str] = []
+        self._held_transcript = ""  # a possible markup start, waiting for the next piece
         self._tool_tasks: dict[str, asyncio.Task] = {}
         self._last_activity = time.monotonic()
 
@@ -335,7 +353,11 @@ class GeminiLiveSession(VoiceSession):
                     self._touch()
                     await self._emit(VoiceEvent("audio", audio=part.inline_data.data))
         if sc.output_transcription and sc.output_transcription.text:
-            await self._emit(VoiceEvent("transcript", {"role": "model", "text": sc.output_transcription.text}))
+            text, self._held_transcript = clean_transcript(self._held_transcript, sc.output_transcription.text)
+            if text:
+                await self._emit(VoiceEvent("transcript", {"role": "model", "text": text}))
+        if sc.turn_complete or sc.interrupted:
+            self._held_transcript = ""  # never markup's start: a "<" left at the end of a turn isn't speech either
         if sc.turn_complete:
             await self._emit(VoiceEvent("turn_complete"))
 

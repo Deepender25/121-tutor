@@ -54,7 +54,7 @@ Pick the service with `WEB_SEARCH` in `.env`:
 
 | `WEB_SEARCH=` | What happens | Needs |
 |---|---|---|
-| `tinyfish` | **TinyFish Search** finds pages; **TinyFish Fetch** then opens the top 3 in a real browser and returns clean text, and the tutor answers from the most relevant paragraphs of those pages, not one-line snippets. Also lets you add any **web page as a source** (below) | `TINYFISH_API_KEY` ([get one](https://agent.tinyfish.ai/api-keys); Search and Fetch have a free daily allowance) |
+| `tinyfish` | **TinyFish Search** finds pages (general web, news or research papers, India-targeted when it matters); **TinyFish Fetch** then reads the best few in a real browser, and the tutor answers from the most relevant paragraphs of those pages, not one-line snippets. Also lets you add any **web page as a source** (below) | `TINYFISH_API_KEY` ([get one](https://agent.tinyfish.ai/api-keys); Search and Fetch have a free daily allowance) |
 | `tavily` | Tavily search snippets | `TAVILY_API_KEY` |
 | `duckduckgo` | DuckDuckGo search snippets | nothing |
 | *(empty)* | Tavily if `TAVILY_API_KEY` is set, otherwise DuckDuckGo (the behaviour before this setting existed) | |
@@ -64,14 +64,24 @@ DuckDuckGo), and the tutor is told which one did. Settings › System shows the 
 shows "Searched the web with TinyFish for …" with a chip for every site used.
 
 **How TinyFish is used, step by step**
-1. The voice model (Gemini Live) decides it needs the web and calls the app's `web_search` tool.
-2. `tutor/web.py` sends the question to **TinyFish Search** (`GET api.search.tinyfish.ai`, with a `purpose` saying
-   it's for a student's question), and gets ranked results: title, site, snippet, URL.
-3. It sends the top 3 URLs to **TinyFish Fetch** in one request (`POST api.fetch.tinyfish.ai`, Markdown, 12 s per
-   page), which renders them in a real browser, so pages that build their content with JavaScript work too.
-4. From each page it keeps the paragraphs that share the most words with the question (about 1,400 characters), and
-   gives those to the model as `content` next to each result's site and URL.
-5. The model answers out loud from that content, naming the site; your notes keep their page references.
+1. The voice model (Gemini Live) decides it needs the web and calls the app's `web_search` tool. It writes the
+   search as English keywords (even when you spoke Hindi), passes your question in your words, and picks the kind
+   (general, news, research papers), a time window for anything current, and whether it's about India.
+2. `tutor/web.py` sends that to **TinyFish Search** (`GET api.search.tinyfish.ai`): `language=en`, `location=IN` for
+   Indian topics, `domain_type` news or research_paper, a recency window (or publication years for papers), a
+   `purpose` that includes your question, and `exclude_domains` for social, login-walled and homework-dump sites
+   (Quora, Pinterest, Chegg, Course Hero, Scribd, Reddit, ...).
+3. The results are re-ranked with a small boost for reliable sources (universities, `.gov`/`.ac.in`/`.nic.in`,
+   Wikipedia, NCERT, NPTEL, Britannica, ...), one per site, duplicates dropped.
+4. The best pages that can be read go to **TinyFish Fetch** (`POST api.fetch.tinyfish.ai`, Markdown) at the same
+   time, one request each, so one slow site can't hold up the rest. Videos and sites that block automated reading
+   are skipped (still listed as sources), and a page that comes back nearly empty is passed over for the next. The
+   whole search stays within about 9 seconds (typically 6 to 7), measured from India.
+5. From each page it keeps the paragraphs that best match your question (rare words count more), with their nearest
+   heading. Menus are dropped, and so is any text that tries to give the model instructions.
+6. The tutor answers from that text, naming each source the way you'd say it ("according to Wikipedia", "The Hindu
+   reports"), giving dates for anything current, and comparing it with your notes, which win for your course.
+   Asking the same thing again within 10 minutes is answered instantly from the last search.
 
 **Add from a link** (the link button in Sources, or "Add from a link" on an empty notebook): paste an address.
 - A link straight to a PDF file is downloaded and added as it is (works with any `WEB_SEARCH`).
@@ -137,6 +147,10 @@ Run `python app.py --debug` to see everything in the API window too.
 - **Web research** with TinyFish (search, then the top pages read in a real browser), Tavily or DuckDuckGo:
   `WEB_SEARCH` in `.env` (see [Web search and TinyFish](#web-search-and-tinyfish)).
 - **Add from a link**: a web page (read with TinyFish) or a PDF file on the web becomes a source like any PDF.
+- **How the tutor teaches** (`prompts/system.md`, built from tutoring research): complete explanations with page
+  references, then a question that makes you use what you learned; hints before answers when you're wrong; it
+  doesn't give in when you insist on something your notes contradict; it won't write work you'll submit but guides
+  you to it; it keeps chit-chat and unrelated requests short; safety help (Tele-MANAS 14416, 112) when it matters.
 
 ## Where things live
 
