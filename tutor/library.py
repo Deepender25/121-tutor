@@ -168,12 +168,15 @@ def ingest(
 
     report("parsing", 0, 1)
     log(f"Parsing {display_name or pdf.name} ...")
-    if isolated_parse:
-        from tutor.ingest.isolated import parse_pdf_isolated
+    from tutor.ingest.isolated import PdfReaderDied, parse_pdf_isolated
 
-        parsed = parse_pdf_isolated(pdf, config.FALLBACK_SECTION_PAGES)
-    else:
-        parsed = parse_pdf(pdf, config.FALLBACK_SECTION_PAGES)
+    try:
+        parsed = (parse_pdf_isolated if isolated_parse else parse_pdf)(pdf, config.FALLBACK_SECTION_PAGES)
+    except (DocumentError, PdfReaderDied):  # already say what happened
+        raise
+    except Exception as e:  # a damaged PDF fails deep inside the PDF library ("range object index out of range")
+        raise DocumentError("Couldn't read this PDF. It may be damaged or saved in an unusual way: open it and save "
+                            "it again (Print to PDF), then add it again.") from e
     title = _choose_title(parsed.title if parsed.title != pdf.stem else "", display_name, pdf.stem)
     log(f"  {parsed.page_count} pages, {len(parsed.sections)} sections (structure from {parsed.structure_source})")
 

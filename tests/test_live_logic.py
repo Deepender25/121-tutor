@@ -192,6 +192,31 @@ def test_first_connect_gives_up_after_two_attempts(monkeypatch):
     assert len(errors_) == 1 and errors_[0].data["fatal"] and "Couldn't reach Gemini" in errors_[0].data["message"]
 
 
+def test_a_connect_that_never_answers_counts_as_a_failed_attempt(monkeypatch):
+    """While the internet is down, looking up Google's address can hang for minutes: each attempt has a deadline,
+    so the person gets "Couldn't reach Gemini" instead of nothing."""
+    from tutor.voice import gemini_live
+
+    no_wait(monkeypatch)
+    monkeypatch.setattr(gemini_live, "CONNECT_TIMEOUT_S", 0.2)
+    attempts = []
+
+    class Hangs:
+        async def __aenter__(self):
+            attempts.append(1)
+            await asyncio.Event().wait()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    s, events = gemini_session()
+    s._client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kw: Hangs())))
+    asyncio.run(asyncio.wait_for(s.run(), 10))
+    errors_ = [e for e in events if e.kind == "error"]
+    assert len(attempts) == 2
+    assert len(errors_) == 1 and "Couldn't reach Gemini" in errors_[0].data["message"]
+
+
 def test_text_sent_while_closing_is_kept_for_the_next_connection():
     class Closing:
         async def send_client_content(self, **kwargs):

@@ -40,6 +40,9 @@ FATAL, STALE_HANDLE, TRANSIENT = "fatal", "stale_handle", "transient"
 # A first connect that fails this many times is reported at once (usually no internet), instead of after the
 # full reconnect backoff (about 34 s). Drops in the middle of a session keep the full backoff.
 FIRST_CONNECT_ATTEMPTS = 2
+# One connect attempt. Normal ones take 1-2.5 s; while the internet is down, looking up Google's address can hang
+# for minutes with nothing shown (seen: 3 minutes), so an attempt that takes longer counts as failed.
+CONNECT_TIMEOUT_S = 20
 
 PROMPT_FAILED = ("Couldn't prepare the tutor for this notebook. If a source shows as missing, remove it and add the "
                  "PDF again. Details are in logs\\voice-tutor.log.")
@@ -170,7 +173,13 @@ class GeminiLiveSession(VoiceSession):
                     await self._emit(VoiceEvent("error", {"message": PROMPT_FAILED, "fatal": True}))
                     break
                 try:
-                    async with self._client.aio.live.connect(model=self._model, config=connect_config) as session:
+                    async with contextlib.AsyncExitStack() as stack:
+                        try:
+                            async with asyncio.timeout(CONNECT_TIMEOUT_S):
+                                session = await stack.enter_async_context(
+                                    self._client.aio.live.connect(model=self._model, config=connect_config))
+                        except TimeoutError:
+                            raise ConnectionError(f"no answer from Gemini within {CONNECT_TIMEOUT_S} s") from None
                         how = (" (resumed the previous session)" if resuming
                                else " (fresh session, recent conversation carried over)" if not first else "")
                         log.info("Connected to %s in %.0f ms%s", self._model,

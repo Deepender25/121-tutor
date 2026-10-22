@@ -67,3 +67,14 @@ def test_closed_embedding_client_never_respawns_the_worker(monkeypatch):
     with pytest.raises(RuntimeError, match="shutting down"):
         client._encode(["text"], 1)
     assert started == []
+
+
+def test_a_damaged_pdf_fails_with_a_readable_message(tmp_path):
+    from tutor.library import DocumentError, ingest
+
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.7\n1 0 obj << /Type /Catalog >> garbage\n%%EOF")
+    for isolated in (False, True):
+        with pytest.raises(DocumentError, match="Couldn't read this PDF"):
+            ingest(broken, None, log=lambda *a: None, remember_current=False, isolated_parse=isolated)
+
