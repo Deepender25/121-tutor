@@ -679,7 +679,7 @@ section, a source, the page buttons. Captions and the floating bubble still foll
 
 ## 31. Local-run hardening, tutor prompt and voice fixes (2026-10-22)
 
-A review pass before the Kritical Hacks 2026 demo, where the app runs entirely on one Windows PC. Server and launcher:
+A review pass for running the app entirely on one Windows PC. Server and launcher:
 - Doc ids are validated (ASCII letters and digits, with a stored index) on every `/api/docs` route before any path
   is built from them, and removing a source checks it's in the notebook, so a crafted id can't read, write or
   delete outside the data folder.

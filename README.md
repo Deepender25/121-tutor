@@ -435,5 +435,5 @@ that setup is described in [deploy/README.md](deploy/README.md) and is currently
 
 ---
 
-Built for **Kritical Hacks 2026** (AI/ML track), with TinyFish as the live-web layer. Design notes, research and
+Built on **Gemini Live**, with TinyFish as the live-web layer. Design notes, research and
 measurements: [DESIGN.md](DESIGN.md).
